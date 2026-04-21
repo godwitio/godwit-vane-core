@@ -1,0 +1,31 @@
+# Apprise API config. Copy to config.yml and fill in your notification URLs.
+# The apprise container auto-loads /config/config.yml on startup.
+#
+# Full URL list: https://github.com/caronc/apprise/wiki
+#
+# Use tags to group destinations and target them by name when notifying:
+#   curl -X POST http://localhost:8000/notify \
+#        -d 'tag=alerts' -d 'body=hello' -d 'title=test'
+
+version: 1
+
+urls:
+  # Discord webhook — create under Server Settings → Integrations → Webhooks
+  - discord://webhook_id/webhook_token:
+      - tag: alerts
+
+  # Slack (incoming webhook — the three-part path after https://hooks.slack.com/services/)
+  - slack://TokenA/TokenB/TokenC:
+      - tag: alerts
+
+  # Telegram bot DM (get chat_id from @userinfobot after messaging your bot)
+  - tgram://bot_token/chat_id:
+      - tag: personal
+
+  # ntfy.sh self-hosted or public
+  - ntfys://ntfy.example.com/godwit-vane:
+      - tag: mobile
+
+  # Email via SMTP
+  - mailto://user:pass@smtp.example.com?to=me@example.com:
+      - tag: digest

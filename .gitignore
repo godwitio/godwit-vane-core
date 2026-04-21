@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.local
+
+# Runtime data (Docker volume mount: /data)
+/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Trained Bayes pipelines (bayes_<signal>_<kind>.pkl)
+bayes_*.pkl
+
+# Apprise runtime config (sample is tracked)
+.infra/apprise/*
+!.infra/apprise/config.sample.yml
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+*local*

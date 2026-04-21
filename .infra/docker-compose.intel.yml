@@ -1,0 +1,56 @@
+# Intel-accelerated stack (Arc / Xe via Ollama's Vulkan backend).
+#   Linux host: works if the user is in the `render` group and /dev/dri exists.
+#   Windows:    requires /dev/dri to be exposed into the WSL2 distro that
+#               runs containers (GPU-PV + `intel-opencl-icd` +
+#               `intel-level-zero-gpu` installed inside that distro).
+#               Verify with: wsl -- ls /dev/dri
+#               If empty, install Ollama natively on Windows instead — its
+#               Windows build already uses Vulkan against Intel GPUs.
+# Verify inside a container:
+#   docker run --rm --device /dev/dri ollama/ollama vulkaninfo --summary
+#
+# Run: docker compose -f docker-compose.intel.yml up -d
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: vane-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      - OLLAMA_VULKAN=1
+    devices:
+      - /dev/dri:/dev/dri
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: vane-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: /bin/sh
+    command: -c "ollama pull phi3.5"
+    restart: "no"
+
+  apprise:
+    image: caronc/apprise:latest
+    container_name: vane-apprise
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apprise:/config
+    restart: unless-stopped
+
+volumes:
+  ollama-models:

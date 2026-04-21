@@ -1,0 +1,124 @@
+# Godwit Vane — Core
+
+> **Status: under active development.** APIs, schemas, and configuration are
+> not yet stable and may change without a migration path between commits.
+> Not recommended for production use.
+
+Self-hosted, source-agnostic **community-intelligence agent**. Watches
+technical communities (Reddit first; HN, Lobsters, Mastodon via the same
+`ContentSource` abstraction) for posts matching your signals — pain points,
+migration intent, comparison questions, brand mentions — and sends
+notifications through Apprise.
+
+**Read-only by design, forever.** No auto-posting, no DM outreach. See
+[core-008](.project/adr/core-008-read-only.md).
+
+**License:** [AGPL-3.0](LICENSE).
+
+## What it does
+
+- **Signals as JSON.** Drop a file into [src/signals/](src/signals/) to
+  monitor a new signal — no code change. Ships with `pain`, `migration`,
+  `comparison`.
+- **Hybrid pipeline that learns.** Cheap pre-filters → per-signal **trained
+  Bayes classifier** → LLM label. Fetched content isn't matched by keywords
+  alone: a ComplementNB model per signal decides the confident cases
+  (relevant or not) and only the uncertain middle band reaches the LLM.
+- **LLM trains the Bayes filter.** Every LLM-labelled post is persisted as a
+  training sample and folded back into the Bayes model on each retrain. As
+  the model matures, more posts get resolved by Bayes alone and LLM traffic
+  drops — typically 10–50× fewer LLM calls than a naive label-everything
+  approach, which makes a local Ollama practical.
+- **Local-first labelling.** The training LLM is a local Ollama model by
+  default (a remote provider is configurable, but Reddit-sourced content is
+  pinned to Ollama and never leaves the host — see
+  [core-009](.project/adr/core-009-training-data-origin.md)).
+- **Content-hash dedup.** Same content seen across subreddits / reposted
+  threads is recognised and collapsed.
+- **Radar.** Exact-match keyword scan (brand / product mentions) runs
+  alongside signal classification.
+- **Apprise notifications.** Discord, Telegram, Slack, ntfy, email, and
+  ~90 other targets via one `APPRISE_URLS` setting.
+- **Single-host, SQLite-backed.** One file on disk is the task queue, the
+  seen-set, the training store, and the analytics table. No external
+  broker, no external DB.
+
+## Architecture at a glance
+
+```
+┌─────────────┐     enqueue     ┌─────────────┐    enqueue     ┌──────────────┐
+│    Pacer    │ ──────────────▶ │  Harvester  │ ─────────────▶ │    Sifter    │
+└─────────────┘    tasks        └─────────────┘    results     └──────────────┘
+                                       │                              │
+                                       ▼                              ▼
+                                external APIs                   SignalRouter
+                                                                + Notifier
+```
+
+Three independent layers, each in its own process, communicating only
+through a persistent SQLite task queue. The **Pacer** ticks the scan
+schedule, the **Harvester** is the only component that touches external
+APIs, and the **Sifter** is the only one that runs the classification
+pipeline. Swap one layer without touching the others.
+
+Full overview: [.project/architecture.md](.project/architecture.md).
+
+## Quick start
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env          # fill APPRISE_URLS, OLLAMA_URL, etc.
+python src/monitor.py
+```
+
+Or with Docker:
+
+```bash
+docker build -t godwit-vane .
+docker run -v $(pwd)/data:/data --env-file .env godwit-vane
+```
+
+The container mounts `/data` for the SQLite database and trained Bayes
+pipelines. See [.env.example](.env.example) for all configuration.
+
+## Configuration
+
+- **Signals** — [src/signals/\*.json](src/signals/). Each file defines a
+  signal (keywords, pre-filter rules, Bayes threshold, LLM prompt).
+- **Channels and pre-filters** — [src/signals/settings.json](src/signals/settings.json).
+  Which subreddits / communities to scan, scan interval, retention.
+- **Notifications** — `APPRISE_URLS` in `.env` (comma-separated).
+  Full target list: <https://github.com/caronc/apprise/wiki>.
+- **Labeller** — `LABELLER=ollama` (default, local) or `anthropic`.
+  Reddit content always uses Ollama regardless of this setting.
+
+## Design docs
+
+Read these before writing code — they encode the invariants, layer
+boundaries, and non-obvious rules that code review enforces.
+
+- [.project/architecture.md](.project/architecture.md) — runtime shape, out-of-scope, decision log index.
+- [.project/layers-and-ports.md](.project/layers-and-ports.md) — import boundaries, source-agnostic data model, ports contract.
+- [.project/invariants.md](.project/invariants.md) — domain and queue invariants.
+- [.project/app/](.project/app/) — per-feature specs.
+- [.project/adr/README.md](.project/adr/README.md) — decision record index.
+
+## Out of scope
+
+- Auto-posting and DM outreach ([core-008](.project/adr/core-008-read-only.md)).
+- Closed-API networks (Twitter, LinkedIn, Facebook). Focus is open
+  technical communities.
+- Multi-host deployment. SQLite queue assumes single host; the
+  `TaskQueuePort` abstraction allows swap to Redis/RabbitMQ if needed.
+- LLM fine-tuning. Models are used as-is.
+- Extended analytics and trend dashboards. Core exposes the data via
+  its REST API; analytics consumers build on that contract.
+
+## License
+
+Godwit Vane Core is licensed under the **GNU Affero General Public License
+v3.0**. See [LICENSE](LICENSE) for the full text.
+
+The AGPL network clause means: if you run a modified version of this code
+as a network service, you must make the full service source available to
+its users. Unmodified self-hosted use has no such obligation.

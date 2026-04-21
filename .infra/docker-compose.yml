@@ -1,0 +1,19 @@
+# Default stack for this machine: Apprise notification gateway only.
+# Ollama runs natively on Windows (https://ollama.com/download/windows) and
+# the core app reaches it at http://localhost:11434 as usual.
+#
+# For GPU-accelerated dockerized Ollama (main PC), use instead:
+#   docker compose -f docker-compose.nvidia.yml up -d
+#   docker compose -f docker-compose.intel.yml  up -d
+#
+# Run: docker compose up -d
+
+services:
+  apprise:
+    image: caronc/apprise:latest
+    container_name: vane-apprise
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apprise:/config
+    restart: unless-stopped
