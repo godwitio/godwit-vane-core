@@ -2,7 +2,7 @@
 
 **Product:** Godwit Vane — Core  
 **Status:** Proposed  
-**Priority:** Foundational — prerequisite for all Insights features
+**Priority:** Foundational — upstream of every analytic that ranks or surfaces posts
 
 ---
 
@@ -87,7 +87,7 @@ All numeric values in `signal.json` — weights, multipliers, the default thresh
 They become accurate through one of three methods:
 
 - **Manual labeling** — hand-judge a set of posts as high/low signal, run the formula, tune weights until output matches judgment
-- **User feedback** — track promote/demote actions in the Insights UI and use them as ground truth
+- **User feedback** — track promote/demote actions from a downstream UI consumer and use them as ground truth
 - **Combined** — manual labels for initial calibration, user feedback for ongoing drift correction
 
 `signal.json` tracks calibration status explicitly. It ships with `"status": "uncalibrated"` and a `next_review` trigger. Weights should not be treated as settled until at least 100 user feedback events have been logged.
@@ -149,7 +149,7 @@ Not a filter. No post is discarded — low-scoring posts remain in the dataset a
     "method": "pending",
     "_methods_available": [
       "manual_labels: score a set of hand-judged posts and tune weights until output matches judgment",
-      "user_feedback: track promote/demote actions in Insights UI and use as ground truth",
+      "user_feedback: track promote/demote actions from a downstream UI consumer and use as ground truth",
       "combined: manual labels for initial calibration, user feedback for ongoing drift correction"
     ],
     "labeled_dataset_size": 0,
