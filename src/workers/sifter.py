@@ -1,9 +1,9 @@
 import time
-from typing import Callable
 
 from core.models import Post, RadarHit, SignalHit
 from core.signal_router import SignalRouter
 from filters.prefilters import PreFilter
+from log import Logger
 from ports.analytics_store import AnalyticsStorePort
 from ports.radar_store import RadarStorePort
 from ports.seen_store import SeenStorePort
@@ -28,7 +28,7 @@ class Sifter:
                  radar_store:     RadarStorePort,
                  trend_analyzer:  TrendAnalyzer,
                  radar_keywords:  list[str],
-                 logger:          Callable[[str], None]):
+                 logger:          Logger):
         self._results       = results
         self._notifications = notifications
         self._prefilter     = prefilter
@@ -60,7 +60,7 @@ class Sifter:
 
             allowed, reason = self._prefilter.allow(post)
             if not allowed:
-                self._log(f"[prefilter] reject {post.source}:{post.id} reason={reason}")
+                self._log.debug(f"[prefilter] reject {post.source}:{post.id} reason={reason}")
                 self._seen.mark_seen(market_key, "market", post.content_hash)
                 self._results.complete(result.id)
                 return True

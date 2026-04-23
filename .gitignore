@@ -44,3 +44,10 @@ htmlcov/
 .DS_Store
 Thumbs.db
 *local*
+
+# Local signal files (only *.sample.json is tracked)
+src/signals/comparison.json
+src/signals/migration.json
+src/signals/pain.json
+src/signals/settings.json
+

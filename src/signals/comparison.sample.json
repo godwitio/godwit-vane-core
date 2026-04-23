@@ -1,0 +1,11 @@
+{
+  "emoji": "⚖️",
+  "label": "COMPARISON",
+  "keywords": [
+    "vs", " versus ", "compare", "comparison", "better than", "worse than",
+    "alternative", "alternatives", "recommend", "recommendation",
+    "which is better", "which one"
+  ],
+  "post_prompt": "Is this POST comparing <YOUR_CATEGORY> products/services or asking for recommendations between them?\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
+  "comment_prompt": "Is this COMMENT comparing <YOUR_CATEGORY> products/services or recommending one over another?\nComment: {body}\nAnswer YES or NO."
+}

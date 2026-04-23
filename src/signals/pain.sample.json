@@ -1,0 +1,11 @@
+{
+  "emoji": "😤",
+  "label": "PAIN POINT",
+  "keywords": [
+    "frustrated", "annoying", "broken", "buggy", "doesn't work",
+    "expensive", "overpriced", "limit", "limited", "lock-in",
+    "bad support", "outage", "downtime", "regret", "fed up"
+  ],
+  "post_prompt": "Is this POST about a pain point, frustration, or problem with <YOUR_CATEGORY> (pricing, reliability, support, missing features, etc.)?\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
+  "comment_prompt": "Is this COMMENT about a pain point or frustration with <YOUR_CATEGORY>?\nComment: {body}\nAnswer YES or NO."
+}

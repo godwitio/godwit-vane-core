@@ -3,9 +3,12 @@
 #
 # Full URL list: https://github.com/caronc/apprise/wiki
 #
-# Use tags to group destinations and target them by name when notifying:
-#   curl -X POST http://localhost:8000/notify \
+# Save this file as config.yml in the same directory. The apprise-api
+# container loads it via the stateful endpoint, keyed by filename stem:
+#   curl -X POST http://localhost:8000/notify/config \
 #        -d 'tag=alerts' -d 'body=hello' -d 'title=test'
+#
+# (POST /notify — no key — is stateless and ignores this file.)
 
 version: 1
 

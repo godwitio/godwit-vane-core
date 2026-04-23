@@ -36,7 +36,9 @@ notifications through Apprise.
 - **Content-hash dedup.** Same content seen across subreddits / reposted
   threads is recognised and collapsed.
 - **Radar.** Exact-match keyword scan (brand / product mentions) runs
-  alongside signal classification.
+  alongside signal classification — configured in
+  [src/signals/radar.json](src/signals/radar.json). See
+  [Signals vs. Radar](#signals-vs-radar) below.
 - **Apprise notifications.** Discord, Telegram, Slack, ntfy, email, and
   ~90 other targets via one `APPRISE_URLS` setting.
 - **Single-host, SQLite-backed.** One file on disk is the task queue, the
@@ -85,12 +87,34 @@ pipelines. See [.env.example](.env.example) for all configuration.
 
 - **Signals** — [src/signals/\*.json](src/signals/). Each file defines a
   signal (keywords, pre-filter rules, Bayes threshold, LLM prompt).
+- **Radar keywords** — [src/signals/radar.json](src/signals/radar.json).
+  Exact strings to alert on (your brand names, product names, article
+  slugs). One vane instance per product.
 - **Channels and pre-filters** — [src/signals/settings.json](src/signals/settings.json).
   Which subreddits / communities to scan, scan interval, retention.
 - **Notifications** — `APPRISE_URLS` in `.env` (comma-separated).
   Full target list: <https://github.com/caronc/apprise/wiki>.
 - **Labeller** — `LABELLER=ollama` (default, local) or `anthropic`.
   Reddit content always uses Ollama regardless of this setting.
+
+### Signals vs. Radar
+
+Both scan the same stream of posts and comments, but they answer different
+questions and run independently — a single post can fire a signal, a radar
+hit, both, or neither.
+
+| | **Signals** | **Radar** |
+|---|---|---|
+| **Question it answers** | "Is this post *about* a topic I care about?" | "Does this post *mention something specific I own*?" |
+| **Match logic** | Keyword pre-filter → trained Bayes classifier → LLM fallback on the uncertain middle band | Plain substring match. No ML, no LLM. |
+| **Output** | `SignalHit` with `confidence` and `decided_by` (bayes / llm) | `RadarHit` with the exact `keyword` that matched |
+| **Configured in** | [src/signals/\*.json](src/signals/) — one file per signal, shared taxonomy | [src/signals/radar.json](src/signals/radar.json) — per-deployment keyword list |
+| **Typical entries** | `pain`, `migration`, `comparison` | `"plumpkin"`, `"invoice-ocr-pro"`, `"/blog/my-article"` |
+| **Channels scanned** | `channels.<source>.market` in `settings.json` | `channels.<source>.radar` in `settings.json` |
+
+Rule of thumb: if the match needs *judgment* ("is this complaining about
+billing?"), it's a **signal**. If a literal string in the post is sufficient
+evidence ("the word *plumpkin* appeared"), it's **radar**.
 
 ## Design docs
 

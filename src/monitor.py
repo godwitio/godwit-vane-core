@@ -8,13 +8,13 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime
-from typing import Callable
 
 import schedule
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(__file__))
+
+from log import Logger
 
 from adapters.anthropic_labeller import AnthropicConfig, AnthropicLabeller
 from adapters.apprise_notifier import AppriseConfig, AppriseNotifier
@@ -50,13 +50,7 @@ from workers.sifter import Sifter
 load_dotenv()
 
 
-def _logger() -> Callable[[str], None]:
-    def log(msg: str) -> None:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-    return log
-
-
-LOG = _logger()
+LOG = Logger(debug_enabled=os.getenv("LOG_LEVEL", "info").lower() == "debug")
 
 
 # ── settings.json ──────────────────────────────────────────────────────────────
@@ -73,11 +67,16 @@ NOTIFIER_CFG          = _cfg.get("notifier", {})
 HARVESTER_CFG         = _cfg.get("harvester", {})
 
 
+# ── radar.json ─────────────────────────────────────────────────────────────────
+with open(os.path.join(_src_dir, "signals", "radar.json"), encoding="utf-8") as _f:
+    _radar_cfg = json.load(_f)
+RADAR_KEYWORDS = [k.strip() for k in _radar_cfg.get("keywords", []) if k.strip()]
+
+
 # ── env secrets / overrides ────────────────────────────────────────────────────
 DB_PATH         = os.getenv("DB_PATH", "godwit_vane.db")
 MODEL_DIR       = os.getenv("MODEL_DIR", ".")
 APPRISE_URLS    = [u.strip() for u in os.getenv("APPRISE_URLS", "").split(",") if u.strip()]
-RADAR_KEYWORDS  = [k.strip() for k in os.getenv("CONTENT_KEYWORDS", "").split(",") if k.strip()]
 
 
 # ── DB / queues ────────────────────────────────────────────────────────────────

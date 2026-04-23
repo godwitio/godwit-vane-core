@@ -16,7 +16,7 @@ class JsonSignalConfigAdapter(SignalConfigPort):
         if not os.path.isdir(self._dir):
             return signals
         for fname in sorted(os.listdir(self._dir)):
-            if not fname.endswith(".json"):
+            if not fname.endswith(".json") or fname.endswith(".sample.json"):
                 continue
             path = os.path.join(self._dir, fname)
             try:

@@ -18,8 +18,9 @@ filename without `.json`. Each has `emoji`, `label`, `keywords`, `post_prompt`,
 Adding a signal = drop a JSON file. Zero code change.
 
 `core/src/signals/settings.json` holds operational config (subreddits, intervals,
-thresholds). It is NOT a signal definition and is filtered out by required-key
-check in the adapter.
+thresholds). `core/src/signals/radar.json` holds exact-match brand/product
+keywords. Neither is a signal definition — both are filtered out by the
+required-key check in the adapter.
 
 ### 1.2 Bayes Models
 

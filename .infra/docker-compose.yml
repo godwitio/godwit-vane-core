@@ -13,7 +13,14 @@ services:
     image: caronc/apprise:latest
     container_name: vane-apprise
     ports:
-      - "8000:8000"
+      # Bind to loopback only — apprise-api has no auth, so any reachable
+      # client can send through the configured webhooks.
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./apprise:/config
+    environment:
+      # Read /config/<key>.yml on demand so POST /notify/<key> works.
+      # Without this, /notify is stateless and ignores config.yml.
+      APPRISE_STATEFUL_MODE: simple
+      APPRISE_CONFIG_DIR: /config
     restart: unless-stopped
