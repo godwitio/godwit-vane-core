@@ -273,7 +273,7 @@ Within ~5 minutes of the first tick you should see, in order:
 1. **Stdout** — lines like:
 
    ```
-   [12:34:56] Godwit Vane starting — Core runtime (no UI).
+   [12:34:56] Godwit Vane starting — Core runtime.
    [12:34:57] Pacer: enqueued 4 reddit channels
    [12:35:10] Harvester: fetched r/aws (discover): 25 posts
    [12:35:22] Sifter: pain/post → YES  "AWS egress bill tripled..."
