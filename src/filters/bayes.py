@@ -1,6 +1,7 @@
 from typing import Callable
 from core.models import Post
 from core.pipeline_factory import build_pipeline
+from log import Logger
 from ports.labeller import LabellerPort
 from ports.model_store import ModelStorePort
 from ports.sample_store import SampleStorePort
@@ -17,7 +18,7 @@ _COMMENT_TRUNCATE = 300
 class BayesModel:
 
     def __init__(self, key: str, model_store: ModelStorePort,
-                 logger: Callable[[str], None]):
+                 logger: Logger):
         self._key   = key
         self._store = model_store
         self._log   = logger
@@ -82,7 +83,7 @@ class ActiveLearner:
                  bayes:        BayesModel,
                  labeller:     LabellerPort,
                  sample_store: SampleStorePort,
-                 logger:       Callable[[str], None],
+                 logger:       Logger,
                  retrain_every: int = RETRAIN_EVERY):
         self._signal = signal_name
         self._kind   = kind
@@ -99,16 +100,24 @@ class ActiveLearner:
     def classify(self, post: Post, prompt: str) -> tuple[bool, str] | None:
         text = _truncate(post)
         confidence = self._bayes.predict(text)
+        tag = f"[classify:{self._signal}:{self._kind}] {post.source}:{post.id}"
 
         if confidence is not None:
             if confidence >= CONFIDENT_YES:
+                self._log.debug(f"{tag} bayes={confidence:.3f} -> YES")
                 return True, "bayes"
             if confidence <= CONFIDENT_NO:
+                self._log.debug(f"{tag} bayes={confidence:.3f} -> NO")
                 return False, "bayes"
+            self._log.debug(f"{tag} bayes={confidence:.3f} (uncertain) -> LLM")
+        else:
+            self._log.debug(f"{tag} bayes=cold -> LLM")
 
         label = self._llm.label(post, prompt)
         if label is None:
+            self._log.debug(f"{tag} llm=abstain")
             return None
+        self._log.debug(f"{tag} llm={'YES' if label else 'NO'}")
 
         self._store.save_sample(self._source_key, text, label)
         self._seen_labels.add(int(label))

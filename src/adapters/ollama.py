@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import requests
 from core.models import Post
+from log import Logger
 from ports.labeller import LabellerPort
 
 
@@ -11,12 +12,20 @@ class OllamaConfig:
     timeout: float = 60.0
 
 
+def _short(s: str, limit: int = 300) -> str:
+    s = s.replace("\n", " ⏎ ")
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
 class OllamaAdapter(LabellerPort):
 
-    def __init__(self, config: OllamaConfig):
+    def __init__(self, config: OllamaConfig, logger: Logger):
         self._cfg = config
+        self._log = logger
 
     def label(self, post: Post, prompt: str) -> bool | None:
+        tag = f"[llm:ollama] {post.source}:{post.id}"
+        self._log.debug(f"{tag} -> prompt={_short(prompt)}")
         try:
             resp = requests.post(
                 f"{self._cfg.url}/api/generate",
@@ -29,9 +38,12 @@ class OllamaAdapter(LabellerPort):
                 timeout=self._cfg.timeout,
             )
             resp.raise_for_status()
-            text = (resp.json().get("response") or "").strip().upper()
+            raw = (resp.json().get("response") or "").strip()
+            self._log.debug(f"{tag} <- raw={raw!r}")
+            text = raw.upper()
             if text.startswith("YES"): return True
             if text.startswith("NO"):  return False
             return None
-        except Exception:
+        except Exception as e:
+            self._log(f"{tag} error: {e}")
             return None

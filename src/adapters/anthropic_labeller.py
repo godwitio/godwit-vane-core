@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import anthropic
 from core.models import Post
+from log import Logger
 from ports.labeller import LabellerPort
 
 
@@ -11,22 +12,33 @@ class AnthropicConfig:
     max_tokens: int = 10
 
 
+def _short(s: str, limit: int = 300) -> str:
+    s = s.replace("\n", " ⏎ ")
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
 class AnthropicLabeller(LabellerPort):
 
-    def __init__(self, config: AnthropicConfig):
+    def __init__(self, config: AnthropicConfig, logger: Logger):
         self._cfg    = config
+        self._log    = logger
         self._client = anthropic.Anthropic(api_key=config.api_key)
 
     def label(self, post: Post, prompt: str) -> bool | None:
+        tag = f"[llm:anthropic] {post.source}:{post.id}"
+        self._log.debug(f"{tag} -> prompt={_short(prompt)}")
         try:
             resp = self._client.messages.create(
                 model=self._cfg.model,
                 max_tokens=self._cfg.max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
-            text = resp.content[0].text.strip().upper()
+            raw = resp.content[0].text.strip()
+            self._log.debug(f"{tag} <- raw={raw!r}")
+            text = raw.upper()
             if text.startswith("YES"): return True
             if text.startswith("NO"):  return False
             return None
-        except Exception:
+        except Exception as e:
+            self._log(f"{tag} error: {e}")
             return None

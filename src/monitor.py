@@ -111,12 +111,12 @@ def _build_labeller() -> LabellerPort:
         return OllamaAdapter(OllamaConfig(
             url   = os.getenv("OLLAMA_URL",   "http://localhost:11434"),
             model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
-        ))
+        ), logger=LOG)
     if kind == "anthropic":
         return AnthropicLabeller(AnthropicConfig(
             api_key = os.getenv("ANTHROPIC_API_KEY") or "",
             model   = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
-        ))
+        ), logger=LOG)
     raise ValueError(f"Unknown LABELLER: {kind!r}. Use 'ollama' or 'anthropic'.")
 
 
