@@ -1,4 +1,5 @@
-# Intel-accelerated stack (Arc / Xe via Ollama's Vulkan backend).
+# Intel-accelerated Ollama (Arc / Xe via Ollama's Vulkan backend).
+# Alternative to running Ollama natively.
 #   Linux host: works if the user is in the `render` group and /dev/dri exists.
 #   Windows:    requires /dev/dri to be exposed into the WSL2 distro that
 #               runs containers (GPU-PV + `intel-opencl-icd` +
@@ -42,15 +43,6 @@ services:
     entrypoint: /bin/sh
     command: -c "ollama pull phi3.5"
     restart: "no"
-
-  apprise:
-    image: caronc/apprise:latest
-    container_name: vane-apprise
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./apprise:/config
-    restart: unless-stopped
 
 volumes:
   ollama-models:

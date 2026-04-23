@@ -1,4 +1,4 @@
-# NVIDIA-accelerated stack.
+# NVIDIA-accelerated Ollama. Alternative to running Ollama natively.
 #   Windows: Docker Desktop + WSL2 + up-to-date NVIDIA Windows driver.
 #   Linux:   nvidia-container-toolkit on the host
 #            (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
@@ -41,15 +41,6 @@ services:
     entrypoint: /bin/sh
     command: -c "ollama pull phi3.5"
     restart: "no"
-
-  apprise:
-    image: caronc/apprise:latest
-    container_name: vane-apprise
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./apprise:/config
-    restart: unless-stopped
 
 volumes:
   ollama-models:
