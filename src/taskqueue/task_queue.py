@@ -82,15 +82,27 @@ class SQLiteTaskQueue(TaskQueuePort):
                 (now + retry_after, error, now, task_id),
             )
 
-    def recover_orphans(self) -> int:
-        cur = self._conn.execute(
-            """
-            UPDATE tasks
-               SET status='pending', not_before=0, updated_at=?
-             WHERE status='running'
-            """,
-            (time.time(),),
-        )
+    def recover_orphans(self, older_than_seconds: float | None = None) -> int:
+        now = time.time()
+        if older_than_seconds is None:
+            cur = self._conn.execute(
+                """
+                UPDATE tasks
+                   SET status='pending', not_before=0, updated_at=?
+                 WHERE status='running'
+                """,
+                (now,),
+            )
+        else:
+            cutoff = now - older_than_seconds
+            cur = self._conn.execute(
+                """
+                UPDATE tasks
+                   SET status='pending', not_before=0, updated_at=?
+                 WHERE status='running' AND updated_at < ?
+                """,
+                (now, cutoff),
+            )
         return cur.rowcount
 
     def cleanup(self, done_days: int, failed_days: int) -> int:

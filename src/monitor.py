@@ -247,6 +247,7 @@ def _periodic():
     schedule.every(SCAN_INTERVAL_MINUTES).minutes.do(PACER.tick)
     schedule.every().day.at(TREND_REPORT_TIME).do(TRENDS.report)
     schedule.every().day.at("03:00").do(HOUSE.run_daily)
+    schedule.every(5).minutes.do(HOUSE.reap_stale)
     schedule.every().week.do(lambda: TRENDS.purge(keep_days=RETENTION_DAYS))
     while True:
         schedule.run_pending()
