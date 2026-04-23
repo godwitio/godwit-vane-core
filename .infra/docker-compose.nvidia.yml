@@ -39,7 +39,7 @@ services:
     environment:
       - OLLAMA_HOST=http://ollama:11434
     entrypoint: /bin/sh
-    command: -c "ollama pull phi3.5"
+    command: -c "ollama pull qwen2.5:7b"
     restart: "no"
 
 volumes:

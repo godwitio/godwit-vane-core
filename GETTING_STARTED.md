@@ -66,15 +66,15 @@ service on port 11434; **do not** run `ollama serve` — it will fail with
 `bind: Only one usage of each socket address…`. Skip straight to the pull:
 
 ```bash
-ollama pull phi3.5      # ~2 GB, matches the default OLLAMA_MODEL
+ollama pull qwen2.5:7b   # ~4.7 GB, matches the default OLLAMA_MODEL
 ```
 
 **Linux (or any host without the service installed).** Start the server
 yourself, then pull:
 
 ```bash
-ollama serve            # leave running in its own terminal/service
-ollama pull phi3.5
+ollama serve             # leave running in its own terminal/service
+ollama pull qwen2.5:7b
 ```
 
 Verify on any platform:
@@ -83,8 +83,10 @@ Verify on any platform:
 curl http://localhost:11434/api/tags
 ```
 
-`phi3.5` should appear in the list. A different model is fine (e.g.
-`llama3.2`, `qwen2.5`); pull it and remember the name for step 6.
+`qwen2.5:7b` should appear in the list. A different model is fine — e.g.
+`llama3.1:8b` (comparable quality) or `phi3.5` (~2 GB, lighter but weaker
+at two-clause classification rules; expect more LLM misfires until Bayes
+takes over). Pull whichever you pick and remember the name for step 6.
 
 > **GPU-hosted Ollama?** If you'd rather run Ollama in Docker on an NVIDIA
 > or Intel GPU, use [.infra/docker-compose.nvidia.yml](.infra/docker-compose.nvidia.yml)
@@ -150,7 +152,7 @@ Open `.env` and set at minimum:
 ```ini
 APPRISE_URLS=discord://123456789012345678/AbCdEf...xyz
 OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=phi3.5
+OLLAMA_MODEL=qwen2.5:7b
 LABELLER=ollama
 REDDIT_USER_AGENT=Godwit-Vane/1.0 (by u/your_reddit_handle)
 ```

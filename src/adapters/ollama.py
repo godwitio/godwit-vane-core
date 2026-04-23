@@ -7,7 +7,7 @@ from ports.labeller import LabellerPort
 @dataclass
 class OllamaConfig:
     url:   str = "http://localhost:11434"
-    model: str = "phi3.5"
+    model: str = "qwen2.5:7b"
     timeout: float = 60.0
 
 

@@ -110,7 +110,7 @@ def _build_labeller() -> LabellerPort:
     if kind == "ollama":
         return OllamaAdapter(OllamaConfig(
             url   = os.getenv("OLLAMA_URL",   "http://localhost:11434"),
-            model = os.getenv("OLLAMA_MODEL", "phi3.5"),
+            model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
         ))
     if kind == "anthropic":
         return AnthropicLabeller(AnthropicConfig(
