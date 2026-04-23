@@ -1,0 +1,26 @@
+{
+  "channels": {
+    "reddit": {
+      "market": ["<subreddit_a>", "<subreddit_b>"],
+      "radar":  ["<subreddit_a>"]
+    }
+  },
+  "per_channel": {
+    "reddit:<subreddit_a>": {
+      "min_score": 2,
+      "max_age_hours": 72,
+      "author_excludes": ["AutoModerator", "[deleted]"]
+    }
+  },
+  "scan_interval_minutes": 60,
+  "trend_report_time": "09:00",
+  "retention_days": 90,
+  "notifier": {
+    "max_batch": 20,
+    "batch_timeout_seconds": 300
+  },
+  "harvester": {
+    "discover_limit": 25,
+    "comment_limit":  100
+  }
+}

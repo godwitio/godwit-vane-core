@@ -1,0 +1,12 @@
+{
+  "emoji": "🚨",
+  "label": "ACTIVE MIGRATION",
+  "keywords": [
+    "migrating", "migration", "moving off", "moving from",
+    "switched from", "switching from", "moved to", "moved off",
+    "migrate from", "migrate to", "leaving", "replaced",
+    "ditched", "abandoning"
+  ],
+  "post_prompt": "Is this POST about someone actively migrating between <YOUR_CATEGORY> vendors, tools, or platforms?\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
+  "comment_prompt": "Is this COMMENT about an active migration between <YOUR_CATEGORY> vendors or tools?\nComment: {body}\nAnswer YES or NO."
+}

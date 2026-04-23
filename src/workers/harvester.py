@@ -1,7 +1,7 @@
 import time
 from dataclasses import asdict
-from typing import Callable
 
+from log import Logger
 from ports.source import ContentSource
 from ports.task_queue import ResultQueuePort, TaskQueuePort
 from sources.errors import PermanentError, RetryableError
@@ -16,7 +16,7 @@ class Harvester:
                  results:  ResultQueuePort,
                  sources:  dict[str, ContentSource],
                  limiters: dict[str, RateLimiter],
-                 logger:   Callable[[str], None],
+                 logger:   Logger,
                  discover_limit: int = 25,
                  comment_limit:  int = 100):
         self._tasks    = tasks
@@ -98,7 +98,7 @@ class Harvester:
             url=task.payload.get("url", ""),
         )
         comments = source.comments(stub, limit=self._comment_limit)
-        self._log(f"[harvester] comments {source.name}:{stub.id} -> {len(comments)}")
+        self._log.debug(f"[harvester] comments {source.name}:{stub.id} -> {len(comments)}")
         for c in comments:
             self._results.enqueue("post", _post_dict(c), source_task_id=task.id)
         self._tasks.complete(task.id)
