@@ -235,6 +235,12 @@ cloud/object-storage examples — useful if that's your domain, otherwise
 swap in your own. Generic templates live next to each one as
 `*.sample.json`. Copy and edit:
 
+> **Shortcut.** If you'd rather have Claude draft all five files from a few
+> questions about your product (and any URLs you point it at), paste the
+> prompt in [.project/prompts/bootstrap-signals.md](.project/prompts/bootstrap-signals.md)
+> into a Claude chat and save the output into `src/signals/`. You can still
+> skim the schemas below to understand what you're getting.
+
 ```bash
 cp src/signals/pain.sample.json        src/signals/pain.json
 cp src/signals/migration.sample.json   src/signals/migration.json

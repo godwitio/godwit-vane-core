@@ -23,6 +23,9 @@ class BayesModel:
         self._log   = logger
         self._pipe  = self._store.load(key)
 
+    def has_model(self) -> bool:
+        return self._pipe is not None
+
     def predict(self, text: str) -> float | None:
         if self._pipe is None:
             return None
@@ -38,8 +41,13 @@ class BayesModel:
 
     def train(self, texts: list[str], labels: list[int]) -> bool:
         if len(texts) < 10:
+            self._log(f"[bayes:{self._key}] retrain skipped — "
+                      f"{len(texts)} samples (need ≥10)")
             return False
         if len(set(labels)) < 2:
+            only = next(iter(set(labels)))
+            self._log(f"[bayes:{self._key}] retrain skipped — "
+                      f"only class={only} across {len(texts)} samples")
             return False
         pipe = build_pipeline(len(texts))
         pipe.fit(texts, labels)
@@ -85,6 +93,8 @@ class ActiveLearner:
         self._source_key = f"llm_{signal_name}_{kind}"
         self._retrain_every = retrain_every
         self._since_retrain = 0
+        _, initial_labels = sample_store.load_samples(self._source_key)
+        self._seen_labels: set[int] = set(initial_labels)
 
     def classify(self, post: Post, prompt: str) -> tuple[bool, str] | None:
         text = _truncate(post)
@@ -101,16 +111,21 @@ class ActiveLearner:
             return None
 
         self._store.save_sample(self._source_key, text, label)
+        self._seen_labels.add(int(label))
         self._since_retrain += 1
-        if self._since_retrain >= self._retrain_every:
-            self._retrain()
-            self._since_retrain = 0
+
+        can_fit = len(self._seen_labels) >= 2
+        cadence_hit = self._since_retrain >= self._retrain_every
+        cold_start  = not self._bayes.has_model()
+        if can_fit and (cadence_hit or cold_start):
+            if self._retrain():
+                self._since_retrain = 0
 
         return label, "llm"
 
-    def _retrain(self) -> None:
+    def _retrain(self) -> bool:
         texts, labels = self._store.load_samples(self._source_key)
-        self._bayes.train(texts, labels)
+        return self._bayes.train(texts, labels)
 
     def confidence(self) -> float:
         texts, _ = self._store.load_samples(self._source_key)
