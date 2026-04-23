@@ -3,6 +3,7 @@
 Only place with os.getenv(). Only place adapters are instantiated.
 No business logic — all of that lives in core/, filters/, services/, workers/.
 """
+import glob
 import json
 import os
 import sys
@@ -47,6 +48,9 @@ from workers.sifter import Sifter
 
 
 load_dotenv()
+
+
+RESET_MODE = "--reset" in sys.argv[1:]
 
 
 LOG = Logger(debug_enabled=os.getenv("LOG_LEVEL", "info").lower() == "debug")
@@ -123,6 +127,33 @@ def _build_labeller() -> LabellerPort:
 LABELLER    = _build_labeller()
 MODEL_STORE = PickleStoreAdapter(MODEL_DIR)
 SIGNAL_CFG  = JsonSignalConfigAdapter(os.path.join(_src_dir, "signals"))
+
+
+# ── Reset mode ─────────────────────────────────────────────────────────────────
+# Wipes cached classification state and re-queues harvested posts so the sifter
+# reclassifies them with the current model / prompts / signals. Run without
+# fetching anything new — useful to tune LLM prompts or swap models without
+# hitting the source API again.
+def _reset_state() -> None:
+    pickles = glob.glob(os.path.join(MODEL_DIR, "bayes_*.pkl"))
+    for p in pickles:
+        os.remove(p)
+
+    DB_CONN.execute("DELETE FROM seen")
+    DB_CONN.execute("DELETE FROM training_data WHERE source_key LIKE 'llm_%'")
+    DB_CONN.execute("DELETE FROM radar_hits")
+    DB_CONN.execute("DELETE FROM term_daily")
+    DB_CONN.execute("DELETE FROM notifications")
+    cur = DB_CONN.execute(
+        "UPDATE results SET status='pending', attempts=0, last_error=NULL "
+        "WHERE status != 'pending'"
+    )
+    LOG(f"[reset] wiped {len(pickles)} bayes pickles, "
+        f"re-queued {cur.rowcount} results for reclassification")
+
+
+if RESET_MODE:
+    _reset_state()
 
 
 # ── Pre-filter config ──────────────────────────────────────────────────────────
@@ -222,8 +253,40 @@ def _periodic():
         time.sleep(30)
 
 
+def _run_reset() -> None:
+    LOG("Godwit Vane starting — reset mode (reclassify only, no fetch).")
+    threads = [
+        threading.Thread(target=SIFTER.run_forever,          name="sifter",   daemon=True),
+        threading.Thread(target=NOTIFIER_WORKER.run_forever, name="notifier", daemon=True),
+    ]
+    for t in threads: t.start()
+
+    stable = 0
+    while stable < 3:
+        time.sleep(2)
+        remaining = DB_CONN.execute(
+            "SELECT "
+            "  (SELECT COUNT(*) FROM results       WHERE status IN ('pending','running')), "
+            "  (SELECT COUNT(*) FROM notifications WHERE status IN ('pending','running'))"
+        ).fetchone()
+        results_left, notifs_left = remaining
+        if results_left == 0 and notifs_left == 0:
+            stable += 1
+        else:
+            stable = 0
+            LOG.debug(f"[reset] draining: results={results_left} notifications={notifs_left}")
+
+    SIFTER.stop()
+    NOTIFIER_WORKER.stop()
+    LOG("[reset] done — queues drained.")
+
+
 def main() -> None:
-    LOG("Godwit Vane starting — Core runtime (no UI).")
+    if RESET_MODE:
+        _run_reset()
+        return
+
+    LOG("Godwit Vane starting — Core runtime.")
     threads = [
         threading.Thread(target=HARVESTER.run_forever,       name="harvester", daemon=True),
         threading.Thread(target=SIFTER.run_forever,          name="sifter",    daemon=True),

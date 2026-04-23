@@ -101,6 +101,26 @@ docker run -v $(pwd)/data:/data --env-file .env godwit-vane
 The container mounts `/data` for the SQLite database and trained Bayes
 pipelines. See [.env.example](.env.example) for all configuration.
 
+### Reclassify without re-fetching (`--reset`)
+
+```bash
+python src/monitor.py --reset
+```
+
+Skips the Harvester entirely, re-queues every previously-fetched post/comment
+in the DB, and runs it back through the Sifter with the current signals,
+prompts, and model. Intended for tuning runs — swap `OLLAMA_MODEL`, edit a
+signal's `*_prompt`, or tweak keywords, then re-run against the same corpus
+without burning any Reddit API calls.
+
+Reset wipes cached classification state so the new configuration actually
+gets exercised: Bayes pickles, LLM-sourced training samples, the `seen`
+dedup table, and `radar_hits` / `term_daily` / `notifications`. Raw
+harvested posts in `results` are preserved — only their status is reset to
+`pending`. Notifications fire as normal during the rerun, and the Bayes
+filters rebuild from scratch as the LLM relabels. The process exits once
+the queue drains.
+
 ## Configuration
 
 - **Signals** — [src/signals/\*.json](src/signals/). Each file defines a
