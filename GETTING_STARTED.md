@@ -3,10 +3,10 @@
 End-to-end walkthrough to go from an empty machine to a running monitor
 that posts Reddit signal matches into a Discord channel. ~15 minutes.
 
-**Assumed stack.** Ollama runs **natively on the host**; the Apprise
-notification gateway runs via the Compose file in [.infra/](.infra/); Core
-itself runs as a Python process. This matches the default
-[.infra/docker-compose.yml](.infra/docker-compose.yml).
+**Assumed stack.** Ollama runs **natively on the host** and Core runs as a
+Python process that talks to Discord directly via the bundled `apprise`
+library — no Docker required for the default path. Optional GPU-hosted
+Ollama compose files live in [.infra/](.infra/).
 
 For architecture see the [README](README.md) and
 [.project/architecture.md](.project/architecture.md). This doc is
@@ -17,8 +17,6 @@ task-focused: do these steps in order.
 ## 0. What you will have at the end
 
 - Ollama running locally with a small labelling model loaded.
-- The Apprise notification gateway up as a Docker container on port 8000
-  (shared notification hub; optional for Core but part of the infra stack).
 - A Discord server with a channel and a webhook.
 - Core running, polling a few subreddits, classifying posts against the
   bundled `pain` / `migration` / `comparison` signals, and pushing hits
@@ -33,10 +31,6 @@ Install once, system-wide:
 - **Python 3.11+** — `python --version`
 - **pip** — `pip --version`
 - **git** — for cloning (if not already done)
-- **Rancher Desktop** (OSS; or Docker Engine + Compose v2) — for the infra
-  stack. Install from <https://rancherdesktop.io/>, then in
-  **Preferences → Container Engine** pick `dockerd (moby)` so the `docker`
-  and `docker compose` CLIs are available. Verify: `docker compose version`.
 - **Ollama** — local LLM runtime.
   Download from <https://ollama.com/download>. Verify:
 
@@ -96,6 +90,13 @@ curl http://localhost:11434/api/tags
 > labeller and never leaves the host. See
 > [core-009](.project/adr/core-009-training-data-origin.md).
 
+> **GPU-hosted Ollama?** If you'd rather run Ollama in Docker on an NVIDIA
+> or Intel GPU, use [.infra/docker-compose.nvidia.yml](.infra/docker-compose.nvidia.yml)
+> or [.infra/docker-compose.intel.yml](.infra/docker-compose.intel.yml)
+> instead of installing natively. You'll need Docker (Rancher Desktop or
+> Docker Engine + Compose v2). The rest of this guide assumes the native
+> path.
+
 ---
 
 ## 4. Create a Discord webhook
@@ -138,68 +139,13 @@ segments of the Discord URL:
 | ------------------------------- | ---------------------------- |
 | `.../webhooks/12345.../AbCd...` | `discord://12345.../AbCd...` |
 
-Keep this value; you'll use it in steps 5 and 6.
+Keep this value; you'll use it in step 5.
 
 ---
 
-## 5. Bring up the infra stack (Apprise gateway)
-
-The infra stack runs the Apprise HTTP notification gateway. Core can use
-it as a shared hub, and any other tool on the host can `curl` it to send
-notifications.
-
-### 5a. Configure the gateway
+## 5. Configure Core (`.env`)
 
 ```bash
-cp .infra/apprise/config.sample.yml .infra/apprise/config.yml
-```
-
-Open `.infra/apprise/config.yml` and replace the placeholder Discord line
-with the Apprise URL you built in step 4d:
-
-```yaml
-version: 1
-urls:
-  - discord://123456789012345678/AbCdEf...xyz:
-      - tag: alerts
-```
-
-Drop the Slack / Telegram / ntfy / mailto examples you don't use.
-
-### 5b. Start it
-
-```bash
-cd .infra
-docker compose up -d
-docker compose ps         # vane-apprise should be running
-```
-
-Quick smoke test — sends a message through the gateway, which should land
-in `#vane-alerts`:
-
-```bash
-curl -X POST http://localhost:8000/notify/config \
-     -d 'tag=alerts' -d 'title=Apprise gateway up' -d 'body=hello from vane infra'
-```
-
-The `/config` suffix is the filename stem of `config.yml`. POSTing to bare
-`/notify` hits the stateless endpoint and ignores the mounted file.
-
-If that arrived, the Discord side is wired correctly. Leave the stack up;
-Core will run separately.
-
-> **GPU-hosted Ollama?** If you'd rather run Ollama in Docker on an NVIDIA
-> or Intel GPU, use [.infra/docker-compose.nvidia.yml](.infra/docker-compose.nvidia.yml)
-> or [.infra/docker-compose.intel.yml](.infra/docker-compose.intel.yml)
-> instead of the default compose file, and skip step 3. This guide assumes
-> the native-Ollama path.
-
----
-
-## 6. Configure Core (`.env`)
-
-```bash
-cd ..                     # back to core/
 cp .env.example .env
 ```
 
@@ -216,9 +162,8 @@ REDDIT_USER_AGENT=Godwit-Vane/1.0 (by u/your_reddit_handle)
 Notes:
 
 - **`APPRISE_URLS`** is comma-separated. The Python `apprise` library
-  inside Core talks to Discord directly via `discord://…` — simpler and
-  one fewer hop than routing through the gateway. The gateway from step 5
-  stays available for other tools / manual notifications.
+  inside Core talks to Discord directly via `discord://…` — no HTTP
+  gateway to run.
 - **`REDDIT_USER_AGENT`** should identify you; Reddit rate-limits generic
   anonymous UAs harder.
 - Leave `DB_PATH`, `MODEL_DIR`, `REDDIT_QPS`, `REDDIT_BURST` at defaults.
@@ -228,7 +173,7 @@ Notes:
 
 ---
 
-## 7. Customize the signal definitions
+## 6. Customize the signal definitions
 
 The bundled `pain.json` / `migration.json` / `comparison.json` ship with
 cloud/object-storage examples — useful if that's your domain, otherwise
@@ -256,7 +201,7 @@ Open each `.json` and replace the placeholders:
   (e.g. `password managers`, `time-tracking apps`, `headless CMS`). Tune the
   `keywords` list to vocabulary your audience actually uses; keyword hits
   are the cheap pre-filter before the LLM sees a post.
-- **`settings.json`** — see step 8 below for `<subreddit_a>` /
+- **`settings.json`** — see step 7 below for `<subreddit_a>` /
   `<subreddit_b>`.
 - **`radar.json`** — replace `<your_brand>`, `<your_product>`,
   `<competitor_name>` with the literal terms you want exact-match alerts on.
@@ -271,7 +216,7 @@ the next process start has a `feature_request` signal. Files ending in
 
 ---
 
-## 8. Pick the subreddits to watch
+## 7. Pick the subreddits to watch
 
 Edit [src/signals/settings.json](src/signals/settings.json). The shipped
 default watches a generic DevOps/AWS/selfhosted mix:
@@ -300,7 +245,7 @@ rules live under `per_channel`.
 
 ---
 
-## 9. Run Core
+## 8. Run Core
 
 From `core/`:
 
@@ -323,7 +268,7 @@ sends every future post back through the LLM.
 
 ---
 
-## 10. Verify end-to-end
+## 9. Verify end-to-end
 
 Within ~5 minutes of the first tick you should see, in order:
 
@@ -352,12 +297,9 @@ If nothing arrives after ~10 minutes:
   python -c "import apprise; a=apprise.Apprise(); a.add('discord://ID/TOKEN'); a.notify(title='test', body='hello from vane')"
   ```
 
-- **Gateway smoke test failed in step 5b** → the gateway's `config.yml` is
-  the problem, not Core. `docker compose logs apprise` from `.infra/`.
-
 ---
 
-## 11. Day-2 tuning
+## 10. Day-2 tuning
 
 - **Add a signal** — drop a new file into [src/signals/](src/signals/)
   following the `pain.json` / `migration.json` shape. No code change;
@@ -366,8 +308,7 @@ If nothing arrives after ~10 minutes:
   `max_age_hours`, `author_excludes`, flair rules) in
   `settings.json`. Excluded items never reach the LLM.
 - **More notification targets** — append more Apprise URLs to
-  `APPRISE_URLS` (comma-separated), or add them to the gateway's
-  `config.yml` under new tags. Full catalogue:
+  `APPRISE_URLS` (comma-separated). Full catalogue:
   <https://github.com/caronc/apprise/wiki>.
 - **Trend report** — daily digest fires at `trend_report_time`
   (default `09:00`, host time). Change it in `settings.json`.
@@ -376,13 +317,12 @@ If nothing arrives after ~10 minutes:
 
 ---
 
-## 12. Stopping / restarting
+## 11. Stopping / restarting
 
 - **Core (Python)**: Ctrl-C. Graceful — in-flight tasks roll back to the
   queue on next startup via `Housekeeping.on_startup()`.
-- **Infra stack**: `docker compose down` from `.infra/` (add `-v` only if
-  you intend to discard Apprise config state).
-- **Ollama**: leave it running; restarts are cheap.
+- **Ollama**: leave it running; restarts are cheap. If using a GPU compose
+  file from `.infra/`, `docker compose -f docker-compose.<variant>.yml down`.
 
 Restart picks up exactly where it left off; the SQLite queue and Bayes
 pickles are the entire state.
