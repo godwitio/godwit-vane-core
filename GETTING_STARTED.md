@@ -86,10 +86,6 @@ curl http://localhost:11434/api/tags
 `phi3.5` should appear in the list. A different model is fine (e.g.
 `llama3.2`, `qwen2.5`); pull it and remember the name for step 6.
 
-> **Why local Ollama?** Reddit-sourced content is pinned to a local
-> labeller and never leaves the host. See
-> [core-009](.project/adr/core-009-training-data-origin.md).
-
 > **GPU-hosted Ollama?** If you'd rather run Ollama in Docker on an NVIDIA
 > or Intel GPU, use [.infra/docker-compose.nvidia.yml](.infra/docker-compose.nvidia.yml)
 > or [.infra/docker-compose.intel.yml](.infra/docker-compose.intel.yml)

@@ -21,7 +21,6 @@ Format: Status / Context / Options considered / Decision / Consequences / Date.
 
 ### Integrations
 - [core-007 — Apprise for notifications, not custom integrations](core-007-apprise-notifications.md)
-- [core-009 — Training-data origin policy (Reddit-labels-must-be-local)](core-009-training-data-origin.md)
 
 ### Product scope
 - [core-008 — Read-only, never auto-posting or DM outreach](core-008-read-only.md)

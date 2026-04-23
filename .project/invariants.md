@@ -69,13 +69,6 @@ See [app/feature-content-hash.md](app/feature-content-hash.md).
 `mark_seen` is called **after** successful processing (retry on error). Exception:
 radar scans mark seen before keyword check (first-seen-wins).
 
-### 1.7 Training-Data Origin Policy
-
-Labels for Reddit-sourced content MUST come from a local model and never leave
-the host. Enforced by `LabellerRouter` pinning `{"reddit": OllamaAdapter}`.
-See [app/feature-training-origin.md](app/feature-training-origin.md),
-[adr/core-009-training-data-origin.md](adr/core-009-training-data-origin.md).
-
 ---
 
 ## 2. Task Queue Invariants

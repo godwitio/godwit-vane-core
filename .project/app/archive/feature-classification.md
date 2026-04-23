@@ -110,18 +110,6 @@ classification continues.
 
 ---
 
-## Training-Data Origin Policy
-
-Labels eventually become Bayes weights. For Reddit-sourced posts, labels MUST
-come from a local model. Enforced by `LabellerRouter`. See
-[feature-training-origin.md](feature-training-origin.md),
-[adr/core-009-training-data-origin.md](../adr/core-009-training-data-origin.md).
-
-`ActiveLearner` and `BayesModel` are source-agnostic — they call
-`labeller.label(post, prompt)` without knowing the backend.
-
----
-
 ## Confidence Reporting
 
 `BayesModel.confidence(texts)` = fraction of samples with probability `> 0.8`

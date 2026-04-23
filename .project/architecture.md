@@ -9,9 +9,9 @@ This doc is the **map**. The rules it points to live in two sibling files:
 - [layers-and-ports.md](layers-and-ports.md) — import boundaries between
   layers, source-agnostic data model, ports contract. What can import what.
 - [invariants.md](invariants.md) — domain invariants (signals, Bayes,
-  thresholds, pre-filters, dedup, mark_seen, training-data origin) and task
-  queue invariants (pragmas, atomic claim, mandatory maintenance). Rules
-  the runtime must uphold.
+  thresholds, pre-filters, dedup, mark_seen) and task queue invariants
+  (pragmas, atomic claim, mandatory maintenance). Rules the runtime must
+  uphold.
 
 ---
 
@@ -80,7 +80,6 @@ section groupings: [adr/README.md](adr/README.md).
 - [adr/core-006-hybrid-pipeline.md](adr/core-006-hybrid-pipeline.md)
 - [adr/core-007-apprise-notifications.md](adr/core-007-apprise-notifications.md)
 - [adr/core-008-read-only.md](adr/core-008-read-only.md)
-- [adr/core-009-training-data-origin.md](adr/core-009-training-data-origin.md)
 - [adr/core-010-bayes-parameters.md](adr/core-010-bayes-parameters.md)
 - [adr/core-011-content-hash-dedup.md](adr/core-011-content-hash-dedup.md)
 - [adr/core-012-json-signals.md](adr/core-012-json-signals.md)

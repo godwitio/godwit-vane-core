@@ -19,7 +19,6 @@ from log import Logger
 from adapters.anthropic_labeller import AnthropicConfig, AnthropicLabeller
 from adapters.apprise_notifier import AppriseConfig, AppriseNotifier
 from adapters.json_signal_config import JsonSignalConfigAdapter
-from adapters.labeller_router import LabellerRouter
 from adapters.ollama import OllamaAdapter, OllamaConfig
 from adapters.pickle_store import PickleStoreAdapter
 from adapters.sqlite_store import SQLiteStore
@@ -107,22 +106,18 @@ LIMITERS     = {s.name: RateLimiter(**s.rate_limit_hints().__dict__) for s in SO
 
 # ── Labeller ───────────────────────────────────────────────────────────────────
 def _build_labeller() -> LabellerPort:
-    ollama = OllamaAdapter(OllamaConfig(
-        url   = os.getenv("OLLAMA_URL",   "http://localhost:11434"),
-        model = os.getenv("OLLAMA_MODEL", "phi3.5"),
-    ))
     kind = os.getenv("LABELLER", "ollama").lower()
     if kind == "ollama":
-        default = ollama
-    elif kind == "anthropic":
-        default = AnthropicLabeller(AnthropicConfig(
+        return OllamaAdapter(OllamaConfig(
+            url   = os.getenv("OLLAMA_URL",   "http://localhost:11434"),
+            model = os.getenv("OLLAMA_MODEL", "phi3.5"),
+        ))
+    if kind == "anthropic":
+        return AnthropicLabeller(AnthropicConfig(
             api_key = os.getenv("ANTHROPIC_API_KEY") or "",
             model   = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
         ))
-    else:
-        raise ValueError(f"Unknown LABELLER: {kind!r}. Use 'ollama' or 'anthropic'.")
-    # Reddit posts MUST be labeled locally — see core-009.
-    return LabellerRouter(by_source={"reddit": ollama}, default=default)
+    raise ValueError(f"Unknown LABELLER: {kind!r}. Use 'ollama' or 'anthropic'.")
 
 
 LABELLER    = _build_labeller()

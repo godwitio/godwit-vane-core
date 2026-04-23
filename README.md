@@ -30,9 +30,8 @@ notifications through Apprise.
   drops — typically 10–50× fewer LLM calls than a naive label-everything
   approach, which makes a local Ollama practical.
 - **Local-first labelling.** The training LLM is a local Ollama model by
-  default (a remote provider is configurable, but Reddit-sourced content is
-  pinned to Ollama and never leaves the host — see
-  [core-009](.project/adr/core-009-training-data-origin.md)).
+  default. A remote provider (e.g. Anthropic) is configurable via
+  `LABELLER`; data routing then follows your config.
 - **Content-hash dedup.** Same content seen across subreddits / reposted
   threads is recognised and collapsed.
 - **Radar.** Exact-match keyword scan (brand / product mentions) runs
@@ -44,6 +43,25 @@ notifications through Apprise.
 - **Single-host, SQLite-backed.** One file on disk is the task queue, the
   seen-set, the training store, and the analytics table. No external
   broker, no external DB.
+
+## Data & Privacy
+
+Godwit Core has no servers. All data stays on your infrastructure.
+
+```
+Reddit API ──▶ Core (your host, your config) ──▶ your local SQLite
+```
+
+Core connects to Reddit using Reddit's public RSS / JSON endpoints — no
+account, no API key, no OAuth app required. Authenticated access
+(bring-your-own Reddit API key for higher rate limits) is on the roadmap;
+when it lands, the key stays on your host.
+
+For classification, posts go to whichever labeller you set via `LABELLER`
+— Ollama keeps them on your host; Anthropic sends them to Anthropic under
+their terms. Your config, your call.
+
+This is not a privacy policy. It is how the software is built.
 
 ## Architecture at a glance
 
@@ -95,7 +113,7 @@ pipelines. See [.env.example](.env.example) for all configuration.
 - **Notifications** — `APPRISE_URLS` in `.env` (comma-separated).
   Full target list: <https://github.com/caronc/apprise/wiki>.
 - **Labeller** — `LABELLER=ollama` (default, local) or `anthropic`.
-  Reddit content always uses Ollama regardless of this setting.
+  All sources go through the labeller you pick.
 
 ### Signals vs. Radar
 
