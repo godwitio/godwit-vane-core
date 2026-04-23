@@ -73,7 +73,7 @@ class Harvester:
                 "comments",
                 {"source": source.name, "channel": channel, "post_id": p.id,
                  "title": p.title, "url": p.url},
-                priority=150,
+                priority=110,
             )
         self._tasks.complete(task.id)
 
