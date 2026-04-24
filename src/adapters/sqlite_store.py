@@ -6,10 +6,12 @@ from core.models import RadarHit
 from ports.analytics_store import AnalyticsStorePort, TermTrend
 from ports.radar_store import RadarStorePort
 from ports.sample_store import SampleStorePort
+from ports.seeding_state import SeedingStatePort
 from ports.seen_store import SeenStorePort
 
 
-class SQLiteStore(SeenStorePort, SampleStorePort, RadarStorePort, AnalyticsStorePort):
+class SQLiteStore(SeenStorePort, SampleStorePort, RadarStorePort,
+                  AnalyticsStorePort, SeedingStatePort):
     """Implements four ports against one SQLite connection.
 
     The connection is owned by the caller (monitor.py opens and closes it).
@@ -129,3 +131,21 @@ class SQLiteStore(SeenStorePort, SampleStorePort, RadarStorePort, AnalyticsStore
             (f"-{keep_days} days",),
         )
         return cur.rowcount
+
+    # ── SeedingStatePort ─────────────────────────────────────────────────
+    def is_seeded(self, channel: str, signal: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM seeding_state WHERE channel=? AND signal=?",
+            (channel, signal),
+        ).fetchone()
+        return row is not None
+
+    def mark_seeded(self, channel: str, signal: str) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO seeding_state (channel, signal, seeded_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(channel, signal) DO NOTHING
+            """,
+            (channel, signal, time.time()),
+        )

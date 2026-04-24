@@ -50,7 +50,12 @@ from workers.sifter import Sifter
 load_dotenv()
 
 
-RESET_MODE = "--reset" in sys.argv[1:]
+RESET_MODE     = "--reset"     in sys.argv[1:]
+SEED_ONLY_MODE = "--seed-only" in sys.argv[1:]
+
+if RESET_MODE and SEED_ONLY_MODE:
+    print("error: --reset and --seed-only are mutually exclusive", file=sys.stderr)
+    sys.exit(2)
 
 
 LOG = Logger(debug_enabled=os.getenv("LOG_LEVEL", "info").lower() == "debug")
@@ -80,6 +85,11 @@ RADAR_KEYWORDS = [k.strip() for k in _radar_cfg.get("keywords", []) if k.strip()
 DB_PATH         = os.getenv("DB_PATH", "godwit_vane.db")
 MODEL_DIR       = os.getenv("MODEL_DIR", ".")
 APPRISE_URLS    = [u.strip() for u in os.getenv("APPRISE_URLS", "").split(",") if u.strip()]
+
+BRAVE_SEED_ENABLED        = os.getenv("BRAVE_SEED_ENABLED", "false").lower() == "true"
+BRAVE_SEARCH_API_KEY      = os.getenv("BRAVE_SEARCH_API_KEY", "")
+BRAVE_SEARCH_QPS          = float(os.getenv("BRAVE_SEARCH_QPS", "0.5"))
+BRAVE_SEARCH_MAX_AGE_DAYS = int(os.getenv("BRAVE_SEARCH_MAX_AGE_DAYS", "365"))
 
 
 # ── DB / queues ────────────────────────────────────────────────────────────────
@@ -242,6 +252,32 @@ PACER = Pacer(
 )
 
 
+# ── Training seed bootstrap ────────────────────────────────────────────────────
+def _build_seeder(force: bool = False):
+    if not force and not BRAVE_SEED_ENABLED:
+        return None
+    if not BRAVE_SEARCH_API_KEY:
+        LOG("[seed] BRAVE_SEARCH_API_KEY missing — skipping")
+        return None
+    from sources.brave.search import BraveSearchClient, BraveSearchConfig
+    from services.seeder.seeder import Seeder, SeederConfig
+    client = BraveSearchClient(
+        BraveSearchConfig(api_key=BRAVE_SEARCH_API_KEY,
+                          qps=BRAVE_SEARCH_QPS, burst=1),
+        logger=LOG)
+    return Seeder(
+        brave=client,
+        brave_limiter=RateLimiter(qps=BRAVE_SEARCH_QPS, burst=1),
+        tasks=TASKS, seen=STORE, state=STORE,
+        signals_fn=SIGNAL_CFG.load,
+        channels=_PACER_CHANNELS,
+        config=SeederConfig(max_age_days=BRAVE_SEARCH_MAX_AGE_DAYS),
+        logger=LOG)
+
+
+SEEDER = _build_seeder()
+
+
 # ── Entry ──────────────────────────────────────────────────────────────────────
 def _periodic():
     schedule.every(SCAN_INTERVAL_MINUTES).minutes.do(PACER.tick)
@@ -307,9 +343,68 @@ def _log_reset_summary() -> None:
         LOG("  (no LLM calls — nothing matched any signal keyword)")
 
 
+def _run_seed_only() -> None:
+    LOG("Godwit Vane starting — seed-only mode (Brave discover → enrich → classify → notify, no RSS).")
+    seeder = _build_seeder(force=True)
+    if seeder is None:
+        LOG("[seed] aborted — BRAVE_SEARCH_API_KEY not set.")
+        sys.exit(1)
+
+    from services.seeder.runner import run_seeder_safely
+
+    # Workers run as in normal mode — but Pacer never starts, so no live RSS
+    # discovery tasks are enqueued. Only the seeder's enrich/comments tasks
+    # flow through Harvester → Sifter → Notifier.
+    workers = [
+        threading.Thread(target=HARVESTER.run_forever,       name="harvester", daemon=True),
+        threading.Thread(target=SIFTER.run_forever,          name="sifter",    daemon=True),
+        threading.Thread(target=NOTIFIER_WORKER.run_forever, name="notifier",  daemon=True),
+    ]
+    for t in workers: t.start()
+
+    seeder_thread = threading.Thread(
+        target=run_seeder_safely, args=(seeder, LOG),
+        name="seeder", daemon=True,
+    )
+    seeder_thread.start()
+
+    prev_done = DB_CONN.execute(
+        "SELECT COUNT(*) FROM tasks WHERE status='done'"
+    ).fetchone()[0]
+    stable = 0
+    while stable < 3:
+        time.sleep(2)
+        tasks_left, results_left, notifs_left, done_now = DB_CONN.execute(
+            "SELECT "
+            "  (SELECT COUNT(*) FROM tasks         WHERE status IN ('pending','running')), "
+            "  (SELECT COUNT(*) FROM results       WHERE status IN ('pending','running')), "
+            "  (SELECT COUNT(*) FROM notifications WHERE status IN ('pending','running')), "
+            "  (SELECT COUNT(*) FROM tasks         WHERE status='done')"
+        ).fetchone()
+        delta = done_now - prev_done
+        prev_done = done_now
+        if (not seeder_thread.is_alive()
+                and tasks_left == 0 and results_left == 0 and notifs_left == 0):
+            stable += 1
+            continue
+        stable = 0
+        seeder_state = "seeding" if seeder_thread.is_alive() else "drain"
+        LOG.debug(f"[seed-only] {seeder_state}: tasks={tasks_left} (+{delta}/2s) "
+                  f"results={results_left} notifications={notifs_left}")
+
+    HARVESTER.stop()
+    SIFTER.stop()
+    NOTIFIER_WORKER.stop()
+    LOG("[seed-only] done — queues drained.")
+
+
 def main() -> None:
     if RESET_MODE:
         _run_reset()
+        return
+
+    if SEED_ONLY_MODE:
+        _run_seed_only()
         return
 
     LOG("Godwit Vane starting — Core runtime.")
@@ -319,6 +414,11 @@ def main() -> None:
         threading.Thread(target=NOTIFIER_WORKER.run_forever, name="notifier",  daemon=True),
     ]
     for t in threads: t.start()
+
+    if SEEDER is not None:
+        from services.seeder.runner import run_seeder_safely
+        threading.Thread(target=run_seeder_safely, args=(SEEDER, LOG),
+                         name="seeder", daemon=True).start()
 
     PACER.tick()
     _periodic()

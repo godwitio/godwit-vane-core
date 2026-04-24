@@ -121,6 +121,33 @@ harvested posts in `results` are preserved — only their status is reset to
 filters rebuild from scratch as the LLM relabels. The process exits once
 the queue drains.
 
+### Historical backfill (`--seed-only`)
+
+```bash
+python src/monitor.py --seed-only
+```
+
+Runs a one-shot historical backfill end-to-end: Brave Search discovers
+Reddit post IDs → Harvester fetches each via Reddit's JSON endpoint →
+Sifter classifies → Notifier fires. The **Pacer never starts**, so there
+is no live RSS discovery — only posts surfaced by Brave are processed.
+The process exits once the seeder finishes and all queues drain.
+
+For each configured `(channel, signal)` pair that has not been seeded
+yet, the seeder queries Brave for `site:reddit.com/r/<channel> "<kw>"`
+across the last `BRAVE_SEARCH_MAX_AGE_DAYS` (default 365), extracts post
+IDs, and enqueues `enrich` + `comments` tasks.
+
+Use it to bootstrap Bayes training data on a fresh install, or to
+backfill a newly-added channel or signal without waiting for live RSS
+discovery to accumulate examples.
+
+Requires `BRAVE_SEARCH_API_KEY` in `.env` (get one at
+<https://api-dashboard.search.brave.com/>). The flag forces seeding on
+regardless of `BRAVE_SEED_ENABLED`. Completion is recorded per
+`(channel, signal)` in the `seeding_state` table, so subsequent
+invocations only re-query pairs that haven't been seeded yet.
+
 ## Configuration
 
 - **Signals** — [src/signals/\*.json](src/signals/). Each file defines a

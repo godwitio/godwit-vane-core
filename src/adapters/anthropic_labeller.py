@@ -12,11 +12,6 @@ class AnthropicConfig:
     max_tokens: int = 10
 
 
-def _short(s: str, limit: int = 300) -> str:
-    s = s.replace("\n", " ⏎ ")
-    return s if len(s) <= limit else s[:limit] + "…"
-
-
 class AnthropicLabeller(LabellerPort):
 
     def __init__(self, config: AnthropicConfig, logger: Logger):
@@ -26,7 +21,7 @@ class AnthropicLabeller(LabellerPort):
 
     def label(self, post: Post, prompt: str) -> bool | None:
         tag = f"[llm:anthropic] {post.source}:{post.id}"
-        self._log.debug(f"{tag} -> prompt={_short(prompt)}")
+        self._log.debug(f"{tag} -> prompt:\n{prompt}")
         try:
             resp = self._client.messages.create(
                 model=self._cfg.model,
