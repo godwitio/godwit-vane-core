@@ -279,7 +279,32 @@ def _run_reset() -> None:
 
     SIFTER.stop()
     NOTIFIER_WORKER.stop()
+    _log_reset_summary()
     LOG("[reset] done — queues drained.")
+
+
+def _log_reset_summary() -> None:
+    rows = DB_CONN.execute(
+        "SELECT source_key, "
+        "       SUM(label=0) AS neg, "
+        "       SUM(label=1) AS pos, "
+        "       COUNT(*)     AS total "
+        "  FROM training_data "
+        " WHERE source_key LIKE 'llm_%' "
+        " GROUP BY source_key ORDER BY source_key"
+    ).fetchall()
+    LOG("[reset] model summary:")
+    for source_key, neg, pos, total in rows:
+        key = source_key[len("llm_"):]
+        pkl = os.path.exists(os.path.join(MODEL_DIR, f"bayes_{key}.pkl"))
+        status = "trained" if pkl else (
+            "no model — only NO labels" if pos == 0 else
+            "no model — only YES labels" if neg == 0 else
+            "no model — train skipped"
+        )
+        LOG(f"  {key}: {total} samples (yes={pos} no={neg}) — {status}")
+    if not rows:
+        LOG("  (no LLM calls — nothing matched any signal keyword)")
 
 
 def main() -> None:
