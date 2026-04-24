@@ -55,8 +55,6 @@ class PublicRedditSource(ContentSource):
         return self._parse_rss(text, channel, limit)
 
     def enrich(self, post: Post) -> Post:
-        if post.score is not None and post.num_comments is not None:
-            return post
         url = _JSON_URL.format(id=post.id)
         text, _ = self._get(url, cache=False)
         if not text:
@@ -67,10 +65,32 @@ class PublicRedditSource(ContentSource):
             listing = data[0]["data"]["children"][0]["data"]
         except (IndexError, KeyError, TypeError):
             return post
+
+        selftext = listing.get("selftext", "")
+        if selftext in ("[deleted]", "[removed]") and listing.get("is_self", False):
+            raise PermanentError(f"deleted post {post.id}")
+
+        if not post.title:
+            post.title = listing.get("title", "") or post.title
+        if not post.body:
+            post.body = selftext or post.body
+        if not post.author:
+            post.author = listing.get("author", "") or post.author
+        if not post.url:
+            permalink = listing.get("permalink", "")
+            if permalink:
+                post.url = f"https://reddit.com{permalink}"
+        if not post.created_at:
+            post.created_at = float(listing.get("created_utc") or 0) or post.created_at
+
         post.score        = listing.get("score", post.score)
         post.num_comments = listing.get("num_comments", post.num_comments)
         post.source_metadata.setdefault("flair", listing.get("link_flair_text", ""))
         post.source_metadata.setdefault("over_18", listing.get("over_18", False))
+
+        # Recompute content_hash since title/body may have been populated.
+        from core.models import _hash
+        post.content_hash = _hash(post.title, post.body)
         return post
 
     def comments(self, post: Post, limit: int) -> list[Post]:

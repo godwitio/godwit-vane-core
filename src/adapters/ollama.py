@@ -12,11 +12,6 @@ class OllamaConfig:
     timeout: float = 60.0
 
 
-def _short(s: str, limit: int = 300) -> str:
-    s = s.replace("\n", " ⏎ ")
-    return s if len(s) <= limit else s[:limit] + "…"
-
-
 class OllamaAdapter(LabellerPort):
 
     def __init__(self, config: OllamaConfig, logger: Logger):
@@ -25,7 +20,7 @@ class OllamaAdapter(LabellerPort):
 
     def label(self, post: Post, prompt: str) -> bool | None:
         tag = f"[llm:ollama] {post.source}:{post.id}"
-        self._log.debug(f"{tag} -> prompt={_short(prompt)}")
+        self._log.debug(f"{tag} -> prompt:\n{prompt}")
         try:
             resp = requests.post(
                 f"{self._cfg.url}/api/generate",
