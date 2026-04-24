@@ -29,9 +29,9 @@ SQLite task queue. Each layer runs in its own process (or thread), and no layer
 calls another directly.
 
 ```
-┌─────────────┐     enqueue     ┌─────────────┐    enqueue     ┌──────────────┐
+┌─────────────┐     enqueue     ┌─────────────┐    upsert      ┌──────────────┐
 │    Pacer    │ ──────────────▶ │  Harvester  │ ─────────────▶ │    Sifter    │
-└─────────────┘    tasks        └─────────────┘    results     └──────────────┘
+└─────────────┘    tasks        └─────────────┘    content     └──────────────┘
                                        │                              │
                                        ▼                              ▼
                                external APIs                    SignalRouter
@@ -41,9 +41,10 @@ calls another directly.
 - **Pacer** — paces the scan cycle: enqueues `discover` tasks on a cron.
   Nothing else.
 - **Harvester** — the only component that calls external APIs. Per-source
-  rate limiters, retry with backoff, writes raw results to the result queue.
-- **Sifter** — reads from the result queue. Runs pre-filters → Bayes → LLM.
-  Composes digests, persists results, hands off to Notifier.
+  rate limiters, retry with backoff, upserts normalized rows into the content
+  store.
+- **Sifter** — claims pending rows from the content store. Runs pre-filters →
+  Bayes → LLM, persists per-signal classifications, hands off to Notifier.
 
 Communication between layers is only through the queue. The Harvester
 doesn't know about the LLM. The Sifter doesn't know about HTTP. The Pacer

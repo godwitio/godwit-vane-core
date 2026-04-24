@@ -15,7 +15,7 @@ core/src/core/        ← pure domain, stdlib only
 core/src/ports/       ← ABCs (interfaces) only
 core/src/sources/     ← ContentSource implementations (Reddit, HN, Lobsters, ...)
 core/src/filters/     ← prefilters, bayes, llm — wrap core domain + ports
-core/src/taskqueue/   ← SQLite task + result + notification queues, housekeeping
+core/src/taskqueue/   ← SQLite task + notification queues, housekeeping, schema
 core/src/workers/     ← Pacer, Harvester, Sifter, Notifier, rate limiters
 core/src/adapters/    ← concrete adapters for non-source ports (labellers, stores, notifiers)
 core/src/services/    ← use-case orchestration (signal routing, trends)
@@ -73,10 +73,10 @@ Details: [app/feature-source-abstraction.md](app/feature-source-abstraction.md),
 |------|---------|
 | `ContentSource` | Harvester |
 | `TaskQueuePort` | Pacer (enqueue), Harvester (claim) |
-| `ResultQueuePort` | Harvester (enqueue), Sifter (claim) |
+| `ContentStorePort` | Harvester (upsert), Sifter (claim) |
 | `LabellerPort` | Sifter (via `LlmFilter`) |
-| `SeenStorePort` | Sifter |
-| `SampleStorePort` | Sifter (via `ActiveLearner`) |
+| `SeenStorePort` | Sifter (radar only — market dedup is via content UNIQUE) |
+| `ClassificationStorePort` | Sifter (via `ActiveLearner`) |
 | `ModelStorePort` | `BayesModel` |
 | `NotifierPort` | Notifier worker, TrendAnalyzer |
 | `SignalConfigPort` | Sifter |

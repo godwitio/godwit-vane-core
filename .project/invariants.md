@@ -61,19 +61,29 @@ See [app/feature-prefilters.md](app/feature-prefilters.md).
 ### 1.5 Content Hash Deduplication
 
 `Post.content_hash` = MD5[:8] of `(title + body)`, computed in `__post_init__`.
-`SeenStorePort.is_seen(key, hash)` returns `False` if the post was edited.
+
+Market dedup is enforced by `content.UNIQUE(source, kind, source_id)`:
+`ContentStorePort.upsert` no-ops when hash matches and re-queues the row
+(wiping its classifications) when hash changed. The `seen` table and
+`SeenStorePort` are used **only** for radar, so a post is only keyword-scanned
+once across edits.
+
 See [app/feature-content-hash.md](app/feature-content-hash.md).
 
 ### 1.6 mark_seen Timing
 
-`mark_seen` is called **after** successful processing (retry on error). Exception:
-radar scans mark seen before keyword check (first-seen-wins).
+`mark_seen` is radar-only. Radar scans mark seen **before** the keyword check
+(first-seen-wins). Market-side dedup needs no explicit mark — the content
+store's UNIQUE constraint + status-driven queue guarantees single processing.
 
 ---
 
 ## 2. Task Queue Invariants
 
-Single SQLite DB with tables `tasks`, `results`, `notifications`.
+Single SQLite DB. Persistent tables: `tasks` (harvester input queue), `content`
+(canonical store + sifter input queue), `classifications` (per-signal outcomes),
+`notifications` (notifier input queue), `seen` (radar-only dedup), `radar_hits`,
+`term_daily`, `etag_cache`.
 
 Mandatory PRAGMA on every connection:
 - `journal_mode=WAL`

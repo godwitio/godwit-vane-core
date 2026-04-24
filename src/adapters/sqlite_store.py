@@ -1,15 +1,15 @@
 import sqlite3
 import time
-from collections import defaultdict
 
 from core.models import RadarHit
 from ports.analytics_store import AnalyticsStorePort, TermTrend
+from ports.classification_store import ClassificationStorePort
 from ports.radar_store import RadarStorePort
-from ports.sample_store import SampleStorePort
 from ports.seen_store import SeenStorePort
 
 
-class SQLiteStore(SeenStorePort, SampleStorePort, RadarStorePort, AnalyticsStorePort):
+class SQLiteStore(SeenStorePort, ClassificationStorePort,
+                  RadarStorePort, AnalyticsStorePort):
     """Implements four ports against one SQLite connection.
 
     The connection is owned by the caller (monitor.py opens and closes it).
@@ -37,30 +37,53 @@ class SQLiteStore(SeenStorePort, SampleStorePort, RadarStorePort, AnalyticsStore
             (key, mode, content_hash, time.time()),
         )
 
-    # ── SampleStorePort ──────────────────────────────────────────────────
-    def save_sample(self, source_key: str, text: str, label: bool) -> None:
+    # ── ClassificationStorePort ──────────────────────────────────────────
+    def save(self, content_id: int, signal_name: str,
+             label: bool, decided_by: str) -> None:
         self._conn.execute(
             """
-            INSERT INTO training_data (source_key, text, label, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO classifications
+                (content_id, signal_name, label, decided_by, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(content_id, signal_name) DO UPDATE SET
+                label=excluded.label,
+                decided_by=excluded.decided_by,
+                created_at=excluded.created_at
             """,
-            (source_key, text, int(label), time.time()),
+            (content_id, signal_name, int(label), decided_by, time.time()),
         )
 
-    def load_samples(self, source_key: str) -> tuple[list[str], list[int]]:
+    def load_training(self, signal_name: str, kind: str) -> list[tuple[str, str, int]]:
         rows = self._conn.execute(
-            "SELECT text, label FROM training_data WHERE source_key=? ORDER BY id",
-            (source_key,),
+            """
+            SELECT c.title, c.body, cls.label
+              FROM classifications cls
+              JOIN content c ON c.id = cls.content_id
+             WHERE cls.signal_name = ?
+               AND c.kind = ?
+               AND cls.decided_by = 'llm'
+             ORDER BY cls.id
+            """,
+            (signal_name, kind),
         ).fetchall()
-        texts  = [r[0] for r in rows]
-        labels = [r[1] for r in rows]
-        return texts, labels
+        return [(r[0] or "", r[1] or "", int(r[2])) for r in rows]
 
-    def count_samples(self, source_key: str) -> int:
-        row = self._conn.execute(
-            "SELECT COUNT(*) FROM training_data WHERE source_key=?", (source_key,),
-        ).fetchone()
-        return row[0] if row else 0
+    def llm_label_counts(self) -> list[tuple[str, str, int, int, int]]:
+        rows = self._conn.execute(
+            """
+            SELECT cls.signal_name, c.kind,
+                   SUM(cls.label = 0) AS neg,
+                   SUM(cls.label = 1) AS pos,
+                   COUNT(*)           AS total
+              FROM classifications cls
+              JOIN content c ON c.id = cls.content_id
+             WHERE cls.decided_by = 'llm'
+             GROUP BY cls.signal_name, c.kind
+             ORDER BY cls.signal_name, c.kind
+            """
+        ).fetchall()
+        return [(r[0], r[1], int(r[2] or 0), int(r[3] or 0), int(r[4] or 0))
+                for r in rows]
 
     # ── RadarStorePort ───────────────────────────────────────────────────
     def save_radar_hit(self, hit: RadarHit) -> None:

@@ -14,7 +14,7 @@ class SignalRouter:
         self._signals  = signals
         self._log      = logger
 
-    def route(self, post: Post) -> list[SignalHit]:
+    def route(self, post: Post, content_id: int) -> list[SignalHit]:
         hits: list[SignalHit] = []
         text = (post.title + " " + post.body).strip()
 
@@ -26,7 +26,7 @@ class SignalRouter:
                 continue
             template = definition.get(f"{post.kind}_prompt", "")
             prompt   = template.format(title=post.title, body=post.body)
-            result   = learner.classify(post, prompt)
+            result   = learner.classify(post, prompt, content_id)
             if result is None:
                 continue
             is_relevant, decided_by = result

@@ -11,15 +11,6 @@ class Task:
     attempts: int
 
 
-@dataclass
-class Result:
-    id:             int
-    source_task_id: int | None
-    type:           str
-    payload:        dict
-    attempts:       int
-
-
 class TaskQueuePort(ABC):
 
     @abstractmethod
@@ -42,21 +33,6 @@ class TaskQueuePort(ABC):
 
     @abstractmethod
     def stats(self) -> dict[str, int]: ...
-
-
-class ResultQueuePort(ABC):
-
-    @abstractmethod
-    def enqueue(self, type: str, payload: dict, source_task_id: int | None = None) -> None: ...
-
-    @abstractmethod
-    def claim(self) -> Result | None: ...
-
-    @abstractmethod
-    def complete(self, result_id: int) -> None: ...
-
-    @abstractmethod
-    def fail(self, result_id: int, error: str) -> None: ...
 
 
 class NotificationQueuePort(ABC):

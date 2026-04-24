@@ -1,10 +1,9 @@
-from typing import Callable
 from core.models import Post
 from core.pipeline_factory import build_pipeline
 from log import Logger
+from ports.classification_store import ClassificationStorePort
 from ports.labeller import LabellerPort
 from ports.model_store import ModelStorePort
-from ports.sample_store import SampleStorePort
 
 
 CONFIDENT_YES = 0.75
@@ -70,34 +69,38 @@ class BayesModel:
             return 0.0
 
 
+def _truncate_text(title: str, body: str, kind: str) -> str:
+    limit = _POST_TRUNCATE if kind == "post" else _COMMENT_TRUNCATE
+    return (title + " " + body)[:limit].strip()
+
+
 def _truncate(post: Post) -> str:
-    limit = _POST_TRUNCATE if post.kind == "post" else _COMMENT_TRUNCATE
-    return (post.title + " " + post.body)[:limit].strip()
+    return _truncate_text(post.title, post.body, post.kind)
 
 
 class ActiveLearner:
 
     def __init__(self,
-                 signal_name:  str,
-                 kind:         str,
-                 bayes:        BayesModel,
-                 labeller:     LabellerPort,
-                 sample_store: SampleStorePort,
-                 logger:       Logger,
+                 signal_name:          str,
+                 kind:                 str,
+                 bayes:                BayesModel,
+                 labeller:             LabellerPort,
+                 classification_store: ClassificationStorePort,
+                 logger:               Logger,
                  retrain_every: int = RETRAIN_EVERY):
         self._signal = signal_name
         self._kind   = kind
         self._bayes  = bayes
         self._llm    = labeller
-        self._store  = sample_store
+        self._store  = classification_store
         self._log    = logger
-        self._source_key = f"llm_{signal_name}_{kind}"
         self._retrain_every = retrain_every
         self._since_retrain = 0
-        _, initial_labels = sample_store.load_samples(self._source_key)
-        self._seen_labels: set[int] = set(initial_labels)
+        initial = classification_store.load_training(signal_name, kind)
+        self._seen_labels: set[int] = {int(label) for _, _, label in initial}
 
-    def classify(self, post: Post, prompt: str) -> tuple[bool, str] | None:
+    def classify(self, post: Post, prompt: str,
+                 content_id: int) -> tuple[bool, str] | None:
         text = _truncate(post)
         confidence = self._bayes.predict(text)
         tag = f"[classify:{self._signal}:{self._kind}] {post.source}:{post.id}"
@@ -105,9 +108,11 @@ class ActiveLearner:
         if confidence is not None:
             if confidence >= CONFIDENT_YES:
                 self._log.debug(f"{tag} bayes={confidence:.3f} -> YES")
+                self._store.save(content_id, self._signal, True, "bayes")
                 return True, "bayes"
             if confidence <= CONFIDENT_NO:
                 self._log.debug(f"{tag} bayes={confidence:.3f} -> NO")
+                self._store.save(content_id, self._signal, False, "bayes")
                 return False, "bayes"
             self._log.debug(f"{tag} bayes={confidence:.3f} (uncertain) -> LLM")
         else:
@@ -119,7 +124,7 @@ class ActiveLearner:
             return None
         self._log.debug(f"{tag} llm={'YES' if label else 'NO'}")
 
-        self._store.save_sample(self._source_key, text, label)
+        self._store.save(content_id, self._signal, bool(label), "llm")
         self._seen_labels.add(int(label))
         self._since_retrain += 1
 
@@ -133,9 +138,15 @@ class ActiveLearner:
         return label, "llm"
 
     def _retrain(self) -> bool:
-        texts, labels = self._store.load_samples(self._source_key)
+        texts, labels = self._load_training()
         return self._bayes.train(texts, labels)
 
+    def _load_training(self) -> tuple[list[str], list[int]]:
+        rows = self._store.load_training(self._signal, self._kind)
+        texts  = [_truncate_text(title, body, self._kind) for title, body, _ in rows]
+        labels = [label for _, _, label in rows]
+        return texts, labels
+
     def confidence(self) -> float:
-        texts, _ = self._store.load_samples(self._source_key)
+        texts, _ = self._load_training()
         return self._bayes.confidence(texts[-200:] if texts else [])

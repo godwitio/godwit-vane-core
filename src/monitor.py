@@ -22,6 +22,7 @@ from adapters.apprise_notifier import AppriseConfig, AppriseNotifier
 from adapters.json_signal_config import JsonSignalConfigAdapter
 from adapters.ollama import OllamaAdapter, OllamaConfig
 from adapters.pickle_store import PickleStoreAdapter
+from adapters.sqlite_content_store import SQLiteContentStore
 from adapters.sqlite_store import SQLiteStore
 
 from core.signal_router import SignalRouter
@@ -33,7 +34,6 @@ from ports.labeller import LabellerPort
 from taskqueue.migrations import open_db
 from taskqueue.housekeeping import Housekeeping
 from taskqueue.notification_queue import SQLiteNotificationQueue
-from taskqueue.result_queue import SQLiteResultQueue
 from taskqueue.task_queue import SQLiteTaskQueue
 
 from services.trend_analyzer import TrendAnalyzer
@@ -85,12 +85,15 @@ APPRISE_URLS    = [u.strip() for u in os.getenv("APPRISE_URLS", "").split(",") i
 # ── DB / queues ────────────────────────────────────────────────────────────────
 DB_CONN  = open_db(DB_PATH)
 STORE    = SQLiteStore(DB_CONN)
+CONTENT  = SQLiteContentStore(DB_CONN)
 TASKS    = SQLiteTaskQueue(DB_CONN)
-RESULTS  = SQLiteResultQueue(DB_CONN)
 NOTIFS   = SQLiteNotificationQueue(DB_CONN)
 
 HOUSE = Housekeeping(TASKS, LOG)
 HOUSE.on_startup()
+_recovered_content = CONTENT.recover_running()
+if _recovered_content:
+    LOG(f"[housekeeping] recovered {_recovered_content} orphaned content rows")
 
 
 # ── Sources + rate limiters ────────────────────────────────────────────────────
@@ -130,26 +133,24 @@ SIGNAL_CFG  = JsonSignalConfigAdapter(os.path.join(_src_dir, "signals"))
 
 
 # ── Reset mode ─────────────────────────────────────────────────────────────────
-# Wipes cached classification state and re-queues harvested posts so the sifter
-# reclassifies them with the current model / prompts / signals. Run without
-# fetching anything new — useful to tune LLM prompts or swap models without
-# hitting the source API again.
+# Wipes classification state and flips every content row back to pending so the
+# sifter reclassifies with the current model / prompts / signals. Also wipes
+# Bayes pickles so new signals added since last run get trained from scratch.
+# Does not fetch new content — useful to tune LLM prompts, swap models, or
+# onboard a new signal JSON without re-harvesting.
 def _reset_state() -> None:
     pickles = glob.glob(os.path.join(MODEL_DIR, "bayes_*.pkl"))
     for p in pickles:
         os.remove(p)
 
+    DB_CONN.execute("DELETE FROM classifications")
     DB_CONN.execute("DELETE FROM seen")
-    DB_CONN.execute("DELETE FROM training_data WHERE source_key LIKE 'llm_%'")
     DB_CONN.execute("DELETE FROM radar_hits")
     DB_CONN.execute("DELETE FROM term_daily")
     DB_CONN.execute("DELETE FROM notifications")
-    cur = DB_CONN.execute(
-        "UPDATE results SET status='pending', attempts=0, last_error=NULL "
-        "WHERE status != 'pending'"
-    )
+    requeued = CONTENT.mark_all_pending()
     LOG(f"[reset] wiped {len(pickles)} bayes pickles, "
-        f"re-queued {cur.rowcount} results for reclassification")
+        f"re-queued {requeued} content rows for reclassification")
 
 
 if RESET_MODE:
@@ -179,13 +180,13 @@ def _build_router() -> SignalRouter:
     signals = SIGNAL_CFG.load()
     learners: dict[tuple[str, str], ActiveLearner] = {
         (name, kind): ActiveLearner(
-            signal_name  = name,
-            kind         = kind,
-            bayes        = BayesModel(key=f"bayes_{name}_{kind}",
-                                      model_store=MODEL_STORE, logger=LOG),
-            labeller     = LABELLER,
-            sample_store = STORE,
-            logger       = LOG,
+            signal_name          = name,
+            kind                 = kind,
+            bayes                = BayesModel(key=f"bayes_{name}_{kind}",
+                                              model_store=MODEL_STORE, logger=LOG),
+            labeller             = LABELLER,
+            classification_store = STORE,
+            logger               = LOG,
         )
         for name in signals for kind in ("post", "comment")
     }
@@ -200,14 +201,14 @@ TRENDS = TrendAnalyzer(store=STORE,
                        logger=LOG)
 
 HARVESTER = Harvester(
-    tasks=TASKS, results=RESULTS,
+    tasks=TASKS, content=CONTENT,
     sources=SOURCES, limiters=LIMITERS, logger=LOG,
     discover_limit=HARVESTER_CFG.get("discover_limit", 25),
     comment_limit=HARVESTER_CFG.get("comment_limit", 100),
 )
 
 SIFTER = Sifter(
-    results=RESULTS, notifications=NOTIFS,
+    content=CONTENT, notifications=NOTIFS,
     prefilter=_build_prefilter(),
     router=_build_router(),
     seen=STORE, radar_store=STORE,
@@ -267,15 +268,15 @@ def _run_reset() -> None:
         time.sleep(2)
         remaining = DB_CONN.execute(
             "SELECT "
-            "  (SELECT COUNT(*) FROM results       WHERE status IN ('pending','running')), "
+            "  (SELECT COUNT(*) FROM content       WHERE status IN ('pending','running')), "
             "  (SELECT COUNT(*) FROM notifications WHERE status IN ('pending','running'))"
         ).fetchone()
-        results_left, notifs_left = remaining
-        if results_left == 0 and notifs_left == 0:
+        content_left, notifs_left = remaining
+        if content_left == 0 and notifs_left == 0:
             stable += 1
         else:
             stable = 0
-            LOG.debug(f"[reset] draining: results={results_left} notifications={notifs_left}")
+            LOG.debug(f"[reset] draining: content={content_left} notifications={notifs_left}")
 
     SIFTER.stop()
     NOTIFIER_WORKER.stop()
@@ -284,18 +285,10 @@ def _run_reset() -> None:
 
 
 def _log_reset_summary() -> None:
-    rows = DB_CONN.execute(
-        "SELECT source_key, "
-        "       SUM(label=0) AS neg, "
-        "       SUM(label=1) AS pos, "
-        "       COUNT(*)     AS total "
-        "  FROM training_data "
-        " WHERE source_key LIKE 'llm_%' "
-        " GROUP BY source_key ORDER BY source_key"
-    ).fetchall()
+    rows = STORE.llm_label_counts()
     LOG("[reset] model summary:")
-    for source_key, neg, pos, total in rows:
-        key = source_key[len("llm_"):]
+    for signal_name, kind, neg, pos, total in rows:
+        key = f"{signal_name}_{kind}"
         pkl = os.path.exists(os.path.join(MODEL_DIR, f"bayes_{key}.pkl"))
         status = "trained" if pkl else (
             "no model — only NO labels" if pos == 0 else

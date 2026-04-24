@@ -1,26 +1,30 @@
 import time
+from dataclasses import asdict
 
+from core.keyword_filter import KeywordFilter
 from core.models import Post, RadarHit, SignalHit
 from core.signal_router import SignalRouter
 from filters.prefilters import PreFilter
 from log import Logger
-from ports.analytics_store import AnalyticsStorePort
+from ports.content_store import ContentStorePort
 from ports.radar_store import RadarStorePort
 from ports.seen_store import SeenStorePort
-from ports.task_queue import NotificationQueuePort, ResultQueuePort
+from ports.task_queue import NotificationQueuePort
 from services.trend_analyzer import TrendAnalyzer
-from core.keyword_filter import KeywordFilter
 
 
 class Sifter:
-    """Sifts harvested posts down to signal hits.
+    """Sifts harvested content down to signal hits.
 
-    Reads raw posts from the result queue. Runs pre-filter → Bayes → LLM → routing.
-    No external network calls here.
+    Claims pending rows from the content store. Runs pre-filter → Bayes → LLM →
+    routing. Market dedup is implicit: the content store's UNIQUE
+    (source, kind, source_id) constraint + status-driven queue guarantees each
+    row is classified once. Radar still uses the `seen` table so a post is only
+    keyword-scanned once across edits.
     """
 
     def __init__(self,
-                 results:         ResultQueuePort,
+                 content:         ContentStorePort,
                  notifications:   NotificationQueuePort,
                  prefilter:       PreFilter,
                  router:          SignalRouter,
@@ -29,7 +33,7 @@ class Sifter:
                  trend_analyzer:  TrendAnalyzer,
                  radar_keywords:  list[str],
                  logger:          Logger):
-        self._results       = results
+        self._content       = content
         self._notifications = notifications
         self._prefilter     = prefilter
         self._router        = router
@@ -41,11 +45,11 @@ class Sifter:
         self._stop = False
 
     def step(self) -> bool:
-        result = self._results.claim()
-        if result is None:
+        claimed = self._content.claim()
+        if claimed is None:
             return False
+        content_id, post = claimed
         try:
-            post = _post_from_dict(result.payload)
             self._trend_analyzer.record_post(post)
 
             radar_hit = self._check_radar(post)
@@ -53,28 +57,21 @@ class Sifter:
                 self._radar_store.save_radar_hit(radar_hit)
                 self._notifications.enqueue("radar_hit", _radar_hit_dict(radar_hit))
 
-            market_key = f"{post.source}_{post.kind}_{post.id}"
-            if self._seen.is_seen(market_key, post.content_hash):
-                self._results.complete(result.id)
-                return True
-
             allowed, reason = self._prefilter.allow(post)
             if not allowed:
                 self._log.debug(f"[prefilter] reject {post.source}:{post.id} reason={reason}")
-                self._seen.mark_seen(market_key, "market", post.content_hash)
-                self._results.complete(result.id)
+                self._content.complete(content_id)
                 return True
 
-            hits = self._router.route(post)
-            self._seen.mark_seen(market_key, "market", post.content_hash)
+            hits = self._router.route(post, content_id)
 
             for hit in hits:
                 self._notifications.enqueue("signal_hit", _signal_hit_dict(hit))
 
-            self._results.complete(result.id)
+            self._content.complete(content_id)
         except Exception as e:
-            self._log(f"[sifter] error on result {result.id}: {e}")
-            self._results.fail(result.id, str(e))
+            self._log(f"[sifter] error on content {content_id}: {e}")
+            self._content.fail(content_id, str(e))
         return True
 
     def _check_radar(self, post: Post) -> RadarHit | None:
@@ -102,14 +99,7 @@ class Sifter:
         self._stop = True
 
 
-def _post_from_dict(d: dict) -> Post:
-    # Strip content_hash (derived); re-derived in __post_init__.
-    d = {k: v for k, v in d.items() if k != "content_hash"}
-    return Post(**d)
-
-
 def _signal_hit_dict(h: SignalHit) -> dict:
-    from dataclasses import asdict
     return {
         "signal_name": h.signal_name,
         "decided_by":  h.decided_by,
@@ -118,5 +108,4 @@ def _signal_hit_dict(h: SignalHit) -> dict:
 
 
 def _radar_hit_dict(r: RadarHit) -> dict:
-    from dataclasses import asdict
     return asdict(r)
