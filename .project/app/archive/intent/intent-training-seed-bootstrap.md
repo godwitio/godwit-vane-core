@@ -4,13 +4,18 @@
 **Status:** Proposed
 **Priority:** Bootstrap — unblocks Bayes classifier warmup on fresh deployments
 
+> **Note (2026-04-24):** Originally built against Google Custom Search JSON
+> API; migrated to Brave Search API after Google closed Custom Search to
+> new customers. Architecture, module boundaries, and control flow are
+> unchanged — only the search backend differs.
+
 ---
 
 ## Intent
 
 Accelerate Bayes classifier training on new installs by seeding the pipeline
 with up to a year of historical Reddit posts and comments discovered via
-Google Search, rather than waiting weeks for live RSS discovery to
+Brave Search, rather than waiting weeks for live RSS discovery to
 accumulate enough labeled examples.
 
 Live discovery via `/r/{channel}/new/.rss` returns ~25 items per poll. On a
@@ -19,7 +24,7 @@ weeks to produce enough positives for Bayes to outperform the LLM fallback.
 Reddit's own listing API caps at ~1000 items per listing with no deeper
 pagination, so the listing API cannot deliver historical backfill either.
 
-Google Search (`site:reddit.com/r/X "<keyword>"`) can surface Reddit URLs
+Brave Search (`site:reddit.com/r/X "<keyword>"`) can surface Reddit URLs
 that are unreachable via the listing API. Those URLs are then enriched
 through the existing Reddit JSON endpoint (`/comments/{id}.json`), which
 works for any post by ID regardless of listing depth.
@@ -29,17 +34,17 @@ works for any post by ID regardless of listing depth.
 ## Scope
 
 - **`.env`-gated, not a CLI command.** Controlled by a single boolean
-  (`GOOGLE_SEED_ENABLED=true|false`). When enabled, seeding runs
+  (`BRAVE_SEED_ENABLED=true|false`). When enabled, seeding runs
   automatically at `monitor.py` startup across every channel already
   configured for live discovery. When disabled, the seeder is inert —
-  no Google queries, no extra code path. There is no operator-supplied
+  no Brave queries, no extra code path. There is no operator-supplied
   query, no per-channel flag, no ad-hoc invocation.
 - **All channels, automatic.** The seeder iterates the same channel list
   the Pacer iterates. Adding a new subreddit to the monitor config
   automatically brings it into the seeding pass on the next restart.
 - **Run-once semantics per (channel, signal).** A dedicated SQLite table
   `seeding_state(channel, signal, seeded_at)` records which pairs have
-  already been seeded, so an enabled flag does not re-query Google on
+  already been seeded, so an enabled flag does not re-query Brave on
   every restart. A channel that has already been seeded for the current
   set of signals short-circuits; adding a new signal later triggers a
   top-up pass for that signal only. If a signal is later removed from
@@ -47,37 +52,38 @@ works for any post by ID regardless of listing depth.
   signal), and the state row is left as a harmless dead entry — no
   active cleanup.
 - **Year-bounded.** Search window controlled by
-  `GOOGLE_SEARCH_MAX_AGE_DAYS` (default `365`). Older content has
+  `BRAVE_SEARCH_MAX_AGE_DAYS` (default `365`). Older content has
   diminishing training value (vocabulary drift, `[deleted]` /
   `[removed]` bodies, dedup-hash collisions on empty bodies) and is out
   of scope for the default configuration.
-- **Reddit only.** Google is used only to discover `reddit.com/comments/...`
-  URLs. Non-comment URLs (user pages, wikis, meta pages) are filtered out.
+- **Reddit only.** Brave Search is used only to discover
+  `reddit.com/comments/...` URLs. Non-comment URLs (user pages, wikis,
+  meta pages) are filtered out.
 - **Posts and comments.** Comment URLs of the form
   `/r/X/comments/POSTID/slug/COMMENTID/` are reduced to POSTID and
   enriched via the normal post-enrich path; the existing `comments()`
   fetch pulls the full tree, so the specific comment lands in results
-  naturally. The fan-out (one Google hit → whole comment tree) is
+  naturally. The fan-out (one Brave hit → whole comment tree) is
   accepted as a feature, not a bug: more training data per query. The
   startup log must report "N posts + M comments enqueued for seeding"
   so the fan-out is visible to the operator.
 - **Query construction is automatic.** For each channel, queries are
   built from that channel's signal JSON keywords —
   `site:reddit.com/r/{channel} "kw1" OR "kw2" OR ...` — sliced into
-  quarterly windows to stay under the 100-results-per-query ceiling.
-  This keeps the result set focused on posts likely to fire signals
-  (and therefore likely to produce useful Bayes training data) rather
-  than broad recent traffic that is mostly noise.
+  quarterly windows to stay well under Brave's 200-results-per-query
+  ceiling. This keeps the result set focused on posts likely to fire
+  signals (and therefore likely to produce useful Bayes training data)
+  rather than broad recent traffic that is mostly noise.
 
 ---
 
 ## What This Is Not
 
-- **Not a ContentSource.** Google does not own the content it points to.
+- **Not a ContentSource.** Brave does not own the content it points to.
   Posts seeded through this path are tagged `source="reddit"`, not
-  `source="google"`. This keeps dedup by content_hash coherent with live
+  `source="brave"`. This keeps dedup by content_hash coherent with live
   discovery and preserves the source-agnostic data model.
-- **Not a Pacer-driven fetcher.** The Pacer never enqueues Google queries
+- **Not a Pacer-driven fetcher.** The Pacer never enqueues Brave queries
   on its cron; the seeding pass happens exactly once per `(channel,
   signal)` pair, at startup, gated by the env flag. The Pacer continues
   to own the ongoing live-discovery loop.
@@ -86,9 +92,9 @@ works for any post by ID regardless of listing depth.
 - **Not a port extension.** No changes to the `ContentSource` ABC. No new
   task type. The seeder writes directly into the existing task queue
   using existing `enrich` + `comments` task shapes.
-- **Not direct Google scraping.** Uses the Google Custom Search JSON API
-  (or equivalent paid proxy). Direct google.com scraping is blocked fast
-  and violates ToS.
+- **Not direct scraping.** Uses the Brave Search API (official JSON
+  endpoint at `api.search.brave.com`). Direct brave.com / Google scraping
+  is blocked fast and violates ToS.
 
 ---
 
@@ -98,17 +104,17 @@ works for any post by ID regardless of listing depth.
 monitor.py startup
     │
     ▼
-GOOGLE_SEED_ENABLED=true ?  ── no ──▶ skip, proceed to Pacer
+BRAVE_SEED_ENABLED=true ?  ── no ──▶ skip, proceed to Pacer
     │ yes
     ▼
 for each channel in SOURCES config:
     for each signal not yet seeded for this channel:
         │
         ▼
-        Google Custom Search client
+        Brave Search client
             │ query = site:reddit.com/r/{channel} "<kw1>" OR "<kw2>" …
             │ year-windowed, sliced into ~4 quarterly sub-queries
-            │ (stays under the 100-results-per-query ceiling)
+            │ (each window's result set fits under the 200/query cap)
             ▼
         Reddit post IDs (extracted from /comments/{id}/ URLs,
                          deduped vs. `seen`)
@@ -131,9 +137,10 @@ Pacer → normal live discovery continues in parallel, uninterrupted
 
 Three shapes were considered; **Shape D** (bootstrap seeder) is chosen:
 
-- **A — Full ContentSource adapter for Google.** Rejected: cross-adapter
-  coupling (`enrich()` would delegate to the Reddit adapter); posts tagged
-  `source="google"` break dedup semantics and the source-agnostic model.
+- **A — Full ContentSource adapter for the search engine.** Rejected:
+  cross-adapter coupling (`enrich()` would delegate to the Reddit
+  adapter); posts tagged `source="brave"` break dedup semantics and the
+  source-agnostic model.
 - **B — Backfill mode on PublicRedditSource.** Rejected for this intent:
   requires extending either the port or the adapter surface; over-
   architected for a one-shot bootstrap.
@@ -144,8 +151,8 @@ Three shapes were considered; **Shape D** (bootstrap seeder) is chosen:
   queue.** Chosen: no port changes, no new task type, no ADR churn, no
   operator interaction beyond flipping a `.env` flag. The seeder is a
   self-contained startup step in `monitor.py` that iterates channels,
-  queries Google using signal JSON keywords, and enqueues enrich tasks
-  at lower priority than live traffic.
+  queries Brave Search using signal JSON keywords, and enqueues enrich
+  tasks at lower priority than live traffic.
 
 ---
 
@@ -162,10 +169,11 @@ Three shapes were considered; **Shape D** (bootstrap seeder) is chosen:
   observably delayed during a seeding run, add `not_before` staggering
   as a follow-up. Operator should observe live discovery continuing at
   its normal cadence during and after a seeding run.
-- **Quota.** Google Custom Search: 100 free queries/day, $5/1k thereafter,
-  hard cap 10k/day. A single-channel seeding pass with quarterly slicing
-  is ~4 queries; a broad multi-channel seeding pass should still fit the
-  free tier comfortably.
+- **Quota.** Brave Search "Data for Search" free tier: 2,000 queries/month
+  at 1 QPS, $0 (card required). Base tier: $5/1k queries at 20 QPS.
+  A single-channel seeding pass with quarterly slicing is ~4 queries; a
+  broad multi-channel seeding pass (e.g., 8 channels × 3 signals × 4
+  windows ≈ 96 queries) fits the free tier with room to spare.
 - **Dedup.** Seeded posts flow through the existing `seen` table and
   content_hash check. Re-running the seeder is safe — already-ingested
   posts short-circuit before re-enqueue.
@@ -182,19 +190,18 @@ Three shapes were considered; **Shape D** (bootstrap seeder) is chosen:
 New keys in `.env.example`:
 
 ```
-GOOGLE_SEED_ENABLED=false
-GOOGLE_SEARCH_API_KEY=
-GOOGLE_CSE_ID=
-GOOGLE_QPS=0.1
-GOOGLE_SEARCH_MAX_AGE_DAYS=365
+BRAVE_SEED_ENABLED=false
+BRAVE_SEARCH_API_KEY=
+BRAVE_SEARCH_QPS=0.5
+BRAVE_SEARCH_MAX_AGE_DAYS=365
 ```
 
-`GOOGLE_SEED_ENABLED` is the single control surface. Default `false` so
-fresh clones never consume quota unintentionally. When `true` but API
-credentials are missing, startup logs a warning and continues without
-seeding — it is not a hard failure.
+`BRAVE_SEED_ENABLED` is the single control surface. Default `false` so
+fresh clones never consume quota unintentionally. When `true` but the API
+key is missing, startup logs a warning and continues without seeding —
+it is not a hard failure.
 
-No changes to `SOURCES_CFG` — Google is not a source.
+No changes to `SOURCES_CFG` — Brave is not a source.
 
 ---
 
@@ -204,7 +211,7 @@ No changes to `SOURCES_CFG` — Google is not a source.
 
 | Piece                                                | Effort    |
 | ---------------------------------------------------- | --------- |
-| Google Custom Search client (HTTP, pagination,       | ~0.5 day  |
+| Brave Search client (HTTP, offset pagination,        | ~0.5 day  |
 | URL→post-ID extraction, non-comment URL filter)      |           |
 | Signal-keyword query builder (read signal JSON,      | ~0.25 day |
 | emit `site:reddit.com/r/X "kw1" OR "kw2" …`)         |           |
@@ -213,7 +220,7 @@ No changes to `SOURCES_CFG` — Google is not a source.
 | vs. `seen`, enqueue skeletons at lower priority)     |           |
 | Seeding state tracking (per `(channel, signal)`)     | ~0.25 day |
 | Deleted-content skip guard                           | folded    |
-| Tests (mocked Google response, ID extraction,        | ~0.5 day  |
+| Tests (mocked Brave response, ID extraction,         | ~0.5 day  |
 | queue injection, dedup, state-tracking short-circuit)|           |
 
 ---

@@ -109,3 +109,10 @@ CREATE TABLE IF NOT EXISTS etag_cache (
     last_mod   TEXT,
     fetched_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS seeding_state (
+    channel    TEXT NOT NULL,
+    signal     TEXT NOT NULL,
+    seeded_at  REAL NOT NULL,
+    PRIMARY KEY (channel, signal)
+);
