@@ -367,23 +367,23 @@ def _run_seed_only() -> None:
     stable = 0
     while stable < 3:
         time.sleep(2)
-        tasks_left, results_left, notifs_left, done_now = DB_CONN.execute(
+        tasks_left, content_left, notifs_left, done_now = DB_CONN.execute(
             "SELECT "
             "  (SELECT COUNT(*) FROM tasks         WHERE status IN ('pending','running')), "
-            "  (SELECT COUNT(*) FROM results       WHERE status IN ('pending','running')), "
+            "  (SELECT COUNT(*) FROM content       WHERE status IN ('pending','running')), "
             "  (SELECT COUNT(*) FROM notifications WHERE status IN ('pending','running')), "
             "  (SELECT COUNT(*) FROM tasks         WHERE status='done')"
         ).fetchone()
         delta = done_now - prev_done
         prev_done = done_now
         if (not seeder_thread.is_alive()
-                and tasks_left == 0 and results_left == 0 and notifs_left == 0):
+                and tasks_left == 0 and content_left == 0 and notifs_left == 0):
             stable += 1
             continue
         stable = 0
         seeder_state = "seeding" if seeder_thread.is_alive() else "drain"
         LOG.debug(f"[seed-only] {seeder_state}: tasks={tasks_left} (+{delta}/2s) "
-                  f"results={results_left} notifications={notifs_left}")
+                  f"content={content_left} notifications={notifs_left}")
 
     HARVESTER.stop()
     SIFTER.stop()
