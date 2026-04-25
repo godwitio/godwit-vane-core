@@ -1,9 +1,9 @@
 import time
-from dataclasses import asdict
 
 from log import Logger
+from ports.content_store import ContentStorePort
 from ports.source import ContentSource
-from ports.task_queue import ResultQueuePort, TaskQueuePort
+from ports.task_queue import TaskQueuePort
 from sources.errors import PermanentError, RetryableError
 from workers.rate_limiter import RateLimiter
 
@@ -13,14 +13,14 @@ class Harvester:
 
     def __init__(self,
                  tasks:    TaskQueuePort,
-                 results:  ResultQueuePort,
+                 content:  ContentStorePort,
                  sources:  dict[str, ContentSource],
                  limiters: dict[str, RateLimiter],
                  logger:   Logger,
                  discover_limit: int = 25,
                  comment_limit:  int = 100):
         self._tasks    = tasks
-        self._results  = results
+        self._content  = content
         self._sources  = sources
         self._limiters = limiters
         self._log      = logger
@@ -63,7 +63,7 @@ class Harvester:
         posts = source.discover(channel, limit=self._discover_limit)
         self._log(f"[harvester] discover {source.name}:{channel} -> {len(posts)} posts")
         for p in posts:
-            self._results.enqueue("post", _post_dict(p), source_task_id=task.id)
+            self._content.upsert(p, source_task_id=task.id)
             self._tasks.enqueue(
                 "enrich",
                 {"source": source.name, "channel": channel, "post_id": p.id},
@@ -85,7 +85,7 @@ class Harvester:
             channel=task.payload["channel"],
         )
         enriched = source.enrich(stub)
-        self._results.enqueue("post_enriched", _post_dict(enriched), source_task_id=task.id)
+        self._content.upsert(enriched, source_task_id=task.id)
         self._tasks.complete(task.id)
 
     def _do_comments(self, task, source: ContentSource) -> None:
@@ -100,7 +100,7 @@ class Harvester:
         comments = source.comments(stub, limit=self._comment_limit)
         self._log.debug(f"[harvester] comments {source.name}:{stub.id} -> {len(comments)}")
         for c in comments:
-            self._results.enqueue("post", _post_dict(c), source_task_id=task.id)
+            self._content.upsert(c, source_task_id=task.id)
         self._tasks.complete(task.id)
 
     def run_forever(self, idle_sleep: float = 5.0) -> None:
@@ -110,10 +110,3 @@ class Harvester:
 
     def stop(self) -> None:
         self._stop = True
-
-
-def _post_dict(p) -> dict:
-    d = asdict(p)
-    # content_hash is derived; drop it for smaller payload
-    d.pop("content_hash", None)
-    return d
