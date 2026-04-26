@@ -49,19 +49,36 @@ new Reddit thread surfaces a new category, and the blocklist grows forever
 while always being one step behind. It's reactive, not principled.
 
 Instead, structure every classifier prompt around a **positive gate**: the
-model says YES only when it sees an explicit named anchor from the target
-domain in the text, AND the intent clause matches. "If no such name
-appears, answer NO." No enumeration of off-domain categories.
+model says YES only when the text is clearly about the target domain AND
+the intent clause matches. "If the text isn't clearly about `<CATEGORY>`,
+answer NO." No enumeration of off-domain categories.
+
+"Clearly about the target domain" has two forms, both of which count as
+hitting the gate:
+
+1. The text explicitly names a product / provider / tool in the category.
+2. The text uses a canonical category noun the audience actually types
+   ("bucket", "database", "headless CMS", "password manager") — even
+   without naming a specific product. This catches users who describe
+   their own setup generically ("our bucket is drifting", "the CMS we
+   use can't handle…").
+
+The anchor list must include both kinds: specific product names *and*
+generic category nouns. A names-only gate silently misses the high-value
+population of users who self-describe without naming tools — a common
+failure mode that can produce zero hits for months on otherwise active
+subreddits.
 
 Every `post_prompt` / `comment_prompt` you emit must follow this shape:
 
-1. **Positive anchor gate** — "qualifies ONLY IF it explicitly names
-   `<CATEGORY>` — e.g. `<product>`, `<competitor_1>`, `<competitor_2>`,
-   `<competitor_3>`, `<competitor_4>`". 4–8 named instances is a good
-   target. Include the product itself and the competitors the user named,
-   plus any canonical category terms users would actually type.
+1. **Positive anchor gate** — "qualifies ONLY IF it is clearly about
+   `<CATEGORY>` — either explicitly naming `<product>`, `<competitor_1>`,
+   `<competitor_2>`, `<competitor_3>`, `<competitor_4>` OR using a
+   canonical category noun like `<generic_noun_1>`, `<generic_noun_2>`".
+   Target 4–6 product/tool names plus 2–3 generic category nouns.
 2. **Intent clause second**, joined by an explicit `AND`.
-3. **Fallback closer** — "If no such name appears in the text, answer NO."
+3. **Fallback closer** — "If the text isn't clearly about `<CATEGORY>`,
+   answer NO."
 4. Runtime placeholders (`{title}` / `{body}`) and the literal closer
    `Answer YES or NO.`
 
@@ -69,11 +86,14 @@ Do **not** wrap the prompt in step-by-step or chain-of-thought framing —
 the model has no output budget for it and will produce junk. Keep the
 prompt declarative and front-loaded.
 
-Tradeoff to accept: the positive gate misses generic posts that describe
-the category without naming a specific product ("I'm moving 50 TB of
-object storage between providers"). These are rare on Reddit — people
-name the tools they use — and missing a few generic posts is cheaper than
-the false-positive flood a loose gate produces.
+Tuning the gate: if early signal volume is too low, widen the
+generic-noun set before adding more product names — generic nouns are
+usually where the gate is leaving value on the table. If volume is too
+noisy, tighten the nouns: prefer multi-word phrases ("object storage"
+beats "storage", "headless CMS" beats "CMS", "managed postgres" beats
+"database"). A names-only gate is the common failure case — it looks
+safe but can starve the classifier of input for long stretches while
+looking like the system is working.
 
 ## Step 1 — gather inputs
 
@@ -97,18 +117,30 @@ Items to infer:
    "headless CMS" beats "content tools").
 4. **Named anchors** (6–10 total). This is the positive gate — if none of
    these strings appears in a post or comment, the classifier answers NO.
-   Combine:
-   - the product itself,
-   - direct competitors / alternatives (mine the site for comparison
-     pages, otherwise use your knowledge of the category),
-   - canonical category terms / tools users in this space actually type
-     (for a password manager that might include things like "password
-     manager" and "vault"; for S3-compatible storage that might include
-     "S3" and "object storage"; for a headless CMS that might include
-     "headless CMS").
-   Pick strings a Reddit user would actually write, not marketing copy.
+   Produce **both** kinds and label them separately in your draft:
+   - **Product/tool names** (4–6): the product itself, direct competitors
+     and alternatives (mine the site for comparison pages, otherwise use
+     your knowledge of the category).
+   - **Generic category nouns** (2–3): strings users type when referring
+     to the category without naming a product — e.g. "object storage"
+     and "bucket" for S3-compatible stores, "password manager" and
+     "vault" for credential tools, "headless CMS" for content platforms,
+     "managed postgres" for database platforms. Prefer multi-word phrases
+     ("headless CMS" is precise; "CMS" alone is too broad).
+   The generic nouns are what lets the gate catch self-descriptions
+   ("our bucket", "the database we manage"). Without them the gate
+   silently misses high-value posts where users don't name tools. Pick
+   strings a Reddit user would actually write, not marketing copy.
 5. **Subreddits to watch** — no `r/` prefix. 4–8 is plenty. A mix of broad
-   category subs and niche ones works best.
+   category subs and niche ones works best. Prefer subreddits where users
+   **voice pain** over subreddits where the category is already solved
+   and boring. Hobbyist subs (r/selfhosted, r/homelab) tend to produce
+   thin signal for B2B tooling because the community has already settled
+   on a tool of choice; industry / enterprise-leaning subs
+   (r/dataengineering, r/sysadmin, r/devops, r/MachineLearning,
+   r/DataHoarder) surface bigger problems with louder stakeholders. If
+   two candidate subs cover the same topic, pick the one with more
+   ops/engineering complaints.
 6. **Extra context URLs** — docs / changelog / pricing worth scanning for
    vocabulary beyond the landing page.
 7. **Audience jargon** — slang, acronyms, product-specific nouns users
@@ -141,31 +173,36 @@ Exact-match alerts. Literal strings only — skip generic words.
 {
   "emoji": "😤",
   "label": "pain point",
-  "keywords": ["frustrated", "..."],
-  "post_prompt": "A POST qualifies ONLY IF it explicitly names <CATEGORY> — e.g. <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4>, <anchor_5>, <anchor_6> — AND it describes a pain point, frustration, or problem with such a product or service (pricing, reliability, support, missing features, onboarding, etc.). If no such name appears in the text, answer NO.\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
-  "comment_prompt": "A COMMENT qualifies ONLY IF it explicitly names <CATEGORY> — e.g. <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4>, <anchor_5> — AND it describes a pain point or frustration with such a product or service. If no such name appears in the text, answer NO.\nComment: {body}\nAnswer YES or NO."
+  "keywords": ["frustrated", "slow", "stuck", "expensive", "..."],
+  "post_prompt": "A POST qualifies ONLY IF it is clearly about <CATEGORY> — either explicitly naming <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4> OR using a canonical category noun like <generic_noun_1>, <generic_noun_2> — AND it describes a pain point, frustration, or problem with such a product or service (pricing, reliability, support, missing features, onboarding, performance, cost, etc.). If the text isn't clearly about <CATEGORY>, answer NO.\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
+  "comment_prompt": "A COMMENT qualifies ONLY IF it is clearly about <CATEGORY> — either explicitly naming <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4> OR using a canonical category noun like <generic_noun_1>, <generic_noun_2> — AND it describes a pain point or frustration with such a product or service. If the text isn't clearly about <CATEGORY>, answer NO.\nComment: {body}\nAnswer YES or NO."
 }
 ```
 
 ### `migration.json`
 
 Same shape. `emoji: "🚨"`, `label: "active migration"`. Keywords around
-switching / moving off / replacing. Both prompts follow the same structure:
-positive anchor gate naming `<CATEGORY>` with 5–6 named anchors from item
-4, AND an intent clause about someone **actively migrating** (already
-moving, not hypothetically considering) between tools in that category,
-with the fallback closer "If no such name appears in the text, answer NO."
-End with the `{title}` / `{body}` placeholders and `Answer YES or NO.`
+switching / moving off / replacing / planning to switch. Both prompts
+follow the same structure: positive anchor gate (product/tool names
+**and** generic category nouns from item 4), AND an intent clause about
+someone **migrating, planning to migrate, or evaluating a migration**
+between tools in that category — include in-flight migrations ("we're
+moving off X"), planning ("planning to switch from X to Y"), and active
+research ("has anyone migrated from X to Y?"). Exclude purely
+retrospective mentions with no forward intent ("we migrated years ago
+and it was fine"). Use the fallback closer "If the text isn't clearly
+about `<CATEGORY>`, answer NO." End with the `{title}` / `{body}`
+placeholders and `Answer YES or NO.`
 
 ### `comparison.json`
 
 Same shape. `emoji: "⚖️"`, `label: "comparison"`. Keywords around
 versus / alternatives / "which is better" / recommendations. Both prompts
-follow the same structure: positive anchor gate naming `<CATEGORY>` with
-5–6 named anchors, AND an intent clause about comparing options or asking
-for recommendations, with the fallback closer "If no such name appears in
-the text, answer NO." End with the `{title}` / `{body}` placeholders and
-`Answer YES or NO.`
+follow the same structure: positive anchor gate (product/tool names
+**and** generic category nouns from item 4), AND an intent clause about
+comparing options or asking for recommendations, with the fallback closer
+"If the text isn't clearly about `<CATEGORY>`, answer NO." End with the
+`{title}` / `{body}` placeholders and `Answer YES or NO.`
 
 ### `settings.json`
 
@@ -216,20 +253,29 @@ and wait for a new **yes** before producing downloads.
 ## Rules
 
 - Replace every `<CATEGORY>` with the exact string from item 3. Replace
-  every `<anchor_N>` with values from item 4. Replace every `<product>` /
-  `<competitor_N>` with values from items 1 and 4. No angle-bracket
-  placeholders left behind in the final JSON.
+  every `<anchor_N>` with product/tool names from item 4. Replace every
+  `<generic_noun_N>` with generic category nouns from item 4. Replace
+  every `<product>` / `<competitor_N>` with values from items 1 and 4.
+  No angle-bracket placeholders left behind in the final JSON.
 - Every classifier prompt must use the **positive-gate** structure:
-  explicit named anchors → AND-joined intent clause → "If no such name
-  appears in the text, answer NO." Do **not** emit negative "answer NO
-  if about Kubernetes / databases / …" blocklists — they don't scale and
-  are the wrong shape for this problem.
+  anchors (product names **and** generic category nouns) → AND-joined
+  intent clause → "If the text isn't clearly about `<CATEGORY>`, answer
+  NO." Do **not** emit negative "answer NO if about Kubernetes /
+  databases / …" blocklists — they don't scale and are the wrong shape.
+  Do **not** build a names-only gate without generic nouns — it looks
+  safe but silently misses self-descriptions and can starve the
+  classifier for long stretches.
 - Keep `{title}` and `{body}` verbatim — Core formats them at runtime.
 - Keep prompts declarative. No "step 1 / step 2", no "think carefully",
   no chain-of-thought preamble — the runtime model has a 10-token output
   budget and will produce junk if asked to reason.
 - Keywords are lowercase vocabulary people **actually type**, not marketing
   copy. 10–16 per signal is a good target; >25 creates noise.
+- For **pain keywords** specifically: mix three registers — mundane pain
+  ("slow", "stuck", "expensive", "won't resume", "surprise bill"), scale
+  hints ("TB of", "petabyte", "too much data"), and catastrophic failure
+  ("crashes", "data loss", "corruption"). A list of only catastrophic
+  vocabulary starves the classifier; most real pain is mundane.
 - No `r/` prefix on subreddit names.
 - Step 2 output: only the five fenced JSON blocks plus the one-line
   confirmation prompt. Step 3 output: only the five downloadable files plus
