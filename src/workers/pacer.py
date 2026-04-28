@@ -22,17 +22,21 @@ class Pacer:
         self._stop     = False
 
     def tick(self) -> int:
-        count = 0
+        scheduled = 0
+        skipped = 0
         for src in self._sources:
             for channel in self._channels.get(src.name, []):
-                self._tasks.enqueue(
+                changed = self._tasks.enqueue(
                     "discover",
                     {"source": src.name, "channel": channel},
                     priority=50,
                 )
-                count += 1
-        self._log(f"[pacer] enqueued {count} discover tasks")
-        return count
+                if changed:
+                    scheduled += 1
+                else:
+                    skipped += 1
+        self._log(f"[pacer] scheduled {scheduled} discover tasks ({skipped} unchanged)")
+        return scheduled
 
     def run_forever(self) -> None:
         self.tick()

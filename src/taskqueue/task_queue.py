@@ -12,17 +12,24 @@ class SQLiteTaskQueue(TaskQueuePort):
     def __init__(self, conn: sqlite3.Connection):
         self._conn = conn
 
-    def enqueue(self, type: str, payload: dict, priority: int = 100) -> None:
+    def enqueue(self, type: str, payload: dict, priority: int = 100) -> bool:
         body = json.dumps(payload, sort_keys=True)
         now  = time.time()
-        self._conn.execute(
+        cur = self._conn.execute(
             """
-            INSERT OR IGNORE INTO tasks
+            INSERT INTO tasks
                 (type, payload, priority, status, created_at, updated_at)
             VALUES (?, ?, ?, 'pending', ?, ?)
+            ON CONFLICT(type, payload) DO UPDATE SET
+                status='pending',
+                not_before=0,
+                updated_at=excluded.updated_at,
+                last_error=NULL
+            WHERE tasks.type='discover' AND tasks.status IN ('done', 'failed')
             """,
             (type, body, priority, now, now),
         )
+        return cur.rowcount > 0
 
     def claim(self) -> Task | None:
         now = time.time()
