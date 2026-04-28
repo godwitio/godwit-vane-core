@@ -84,7 +84,15 @@ RADAR_KEYWORDS = [k.strip() for k in _radar_cfg.get("keywords", []) if k.strip()
 # ── env secrets / overrides ────────────────────────────────────────────────────
 DB_PATH         = os.getenv("DB_PATH", "godwit_vane.db")
 MODEL_DIR       = os.getenv("MODEL_DIR", ".")
-APPRISE_URLS    = [u.strip() for u in os.getenv("APPRISE_URLS", "").split(",") if u.strip()]
+APPRISE_URLS         = [u.strip() for u in os.getenv("APPRISE_URLS",         "").split(",") if u.strip()]
+APPRISE_URLS_SIGNALS = [u.strip() for u in os.getenv("APPRISE_URLS_SIGNALS", "").split(",") if u.strip()]
+APPRISE_URLS_RADAR   = [u.strip() for u in os.getenv("APPRISE_URLS_RADAR",   "").split(",") if u.strip()]
+
+# Resolved per-stream URL sets. Empty stream-specific lists fall back to
+# APPRISE_URLS, so an operator who only sets APPRISE_URLS keeps today's
+# single-destination behavior.
+_SIGNAL_URLS = APPRISE_URLS_SIGNALS or APPRISE_URLS
+_RADAR_URLS  = APPRISE_URLS_RADAR   or APPRISE_URLS
 
 BRAVE_SEED_ENABLED        = os.getenv("BRAVE_SEED_ENABLED", "false").lower() == "true"
 BRAVE_SEARCH_API_KEY      = os.getenv("BRAVE_SEARCH_API_KEY", "")
@@ -203,12 +211,27 @@ def _build_router() -> SignalRouter:
     return SignalRouter(learners=learners, signals=signals, logger=LOG)
 
 
-TRENDS = TrendAnalyzer(store=STORE,
-                       notifier=AppriseNotifier(
-                           AppriseConfig(urls=APPRISE_URLS, title="Godwit Vane"),
-                           signals=SIGNAL_CFG.load(), logger=LOG,
-                       ),
-                       logger=LOG)
+def _build_apprise_notifier_for_destination(urls: list[str], title: str) -> AppriseNotifier:
+    """Adapter factory for the notifier worker.
+
+    The worker resolves each queued item to a destination (URL set + title),
+    then asks for a NotifierPort for that destination. Adapter instantiation
+    stays here in monitor — workers and adapters never share imports.
+    """
+    return AppriseNotifier(
+        AppriseConfig(urls=urls, title=title),
+        signals=SIGNAL_CFG.load(),
+        logger=LOG,
+    )
+
+
+# Trend reports follow the signal route: trends are an aggregate over post
+# traffic, not a brand-mention stream.
+TRENDS = TrendAnalyzer(
+    store=STORE,
+    notifier=_build_apprise_notifier_for_destination(_SIGNAL_URLS, "Godwit Vane"),
+    logger=LOG,
+)
 
 HARVESTER = Harvester(
     tasks=TASKS, content=CONTENT,
@@ -229,10 +252,9 @@ SIFTER = Sifter(
 
 NOTIFIER_WORKER = NotifierWorker(
     queue=NOTIFS,
-    notifier=AppriseNotifier(
-        AppriseConfig(urls=APPRISE_URLS, title="Godwit Vane"),
-        signals=SIGNAL_CFG.load(), logger=LOG,
-    ),
+    notifier_factory=_build_apprise_notifier_for_destination,
+    signal_urls=_SIGNAL_URLS,
+    radar_urls=_RADAR_URLS,
     signals_fn=SIGNAL_CFG.load,
     logger=LOG,
     max_batch=NOTIFIER_CFG.get("max_batch", 20),

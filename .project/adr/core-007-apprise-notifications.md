@@ -50,6 +50,13 @@ Multiple URLs fan out — same digest goes to all configured channels.
   rich formatting.
 - Apprise version upgrades may change URL syntax or behavior.
 
+**Optional per-channel destination routing.** `APPRISE_URLS_SIGNALS` and
+`APPRISE_URLS_RADAR` allow operators to split the signal-hit and radar-hit
+streams to independent destinations. Both keys are optional and fall back to
+`APPRISE_URLS`, so existing deployments are unchanged. Routing is
+destination-key based (normalized URL set): same key merges into one digest,
+different keys split into independent sends with isolated retry/failure.
+
 ## URL examples
 
 ```

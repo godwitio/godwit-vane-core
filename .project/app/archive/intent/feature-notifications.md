@@ -58,6 +58,25 @@ gotify://host/token
 Configured as `APPRISE_URLS` env (comma-separated) or via Settings UI (future).
 Multiple URLs fan out — the same digest goes to all configured channels.
 
+### Per-stream destination routing
+
+Two optional env keys split the radar and signal streams to independent
+destinations:
+
+- `APPRISE_URLS_SIGNALS` — overrides destination for `signal_hit` queue rows
+  (and trend reports).
+- `APPRISE_URLS_RADAR` — overrides destination for `radar_hit` queue rows.
+
+Both fall back to `APPRISE_URLS` when empty. Routing is **destination-key
+based**: each event group resolves to a normalized URL set, then the worker
+buckets the claimed batch by that key.
+
+- Same destination (or unset overrides) → automatic merge into one digest.
+- Different destinations → two independent sends with isolated retry/failure.
+
+Order differences in URL lists normalize to the same key, so `a,b` and `b,a`
+merge.
+
 ---
 
 ## Digest Composition
