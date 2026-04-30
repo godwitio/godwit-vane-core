@@ -25,7 +25,7 @@ class SignalRouter:
             if learner is None:
                 continue
             template = definition.get(f"{post.kind}_prompt", "")
-            prompt   = template.format(title=post.title, body=post.body)
+            prompt   = template.replace("{title}", post.title).replace("{body}", post.body)
             result   = learner.classify(post, prompt, content_id)
             if result is None:
                 continue
