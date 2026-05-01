@@ -124,7 +124,7 @@ class ActiveLearner:
     def _classify_cascade(self, post: Post, prompt: GatePrompts,
                           content_id: int,
                           tag: str) -> tuple[bool, str] | None:
-        dom = self._llm.label(post, prompt.domain)
+        dom = self._llm.label(post, prompt.domain, gate="domain")
         if dom is None:
             self._log.debug(f"{tag} llm:domain=abstain")
             return None
@@ -133,7 +133,7 @@ class ActiveLearner:
             self._persist_and_maybe_retrain(content_id, False, "llm:domain")
             return False, "llm:domain"
 
-        nt = self._llm.label(post, prompt.intent)
+        nt = self._llm.label(post, prompt.intent, gate="intent")
         if nt is None:
             self._log.debug(f"{tag} llm:intent=abstain")
             return None

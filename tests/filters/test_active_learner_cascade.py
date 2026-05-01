@@ -45,7 +45,7 @@ class ScriptedLabeller(LabellerPort):
         self._results = list(results)
         self.calls: list[tuple[str, str]] = []  # (post.id, prompt)
 
-    def label(self, post: Post, prompt: str) -> bool | None:
+    def label(self, post: Post, prompt: str, gate: str = "") -> bool | None:
         self.calls.append((post.id, prompt))
         return self._results.pop(0)
 
@@ -271,7 +271,7 @@ def test_slow_labeller_double_latency_worst_case():
     class CountingLabeller(LabellerPort):
         def __init__(self, results: list[bool | None]):
             self._results = list(results)
-        def label(self, post: Post, prompt: str) -> bool | None:
+        def label(self, post: Post, prompt: str, gate: str = "") -> bool | None:
             counter["n"] += 1
             order.append((counter["n"], prompt))
             return self._results.pop(0)

@@ -180,7 +180,7 @@ def _build_prefilter() -> PreFilter:
     cfgs: dict[str, ChannelPreFilterConfig] = {}
     for key, raw in PER_CHANNEL.items():
         cfgs[key] = ChannelPreFilterConfig(
-            min_score         = raw.get("min_score", 0),
+            min_score         = raw.get("min_score", -1),
             max_age_hours     = raw.get("max_age_hours"),
             domain_contains   = raw.get("domain_contains",  []),
             domain_excludes   = raw.get("domain_excludes",  []),

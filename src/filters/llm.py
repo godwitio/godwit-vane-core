@@ -14,9 +14,9 @@ class LlmFilter:
         self._labeller = labeller
         self._log      = logger
 
-    def label(self, post: Post, prompt: str) -> bool | None:
+    def label(self, post: Post, prompt: str, gate: str = "") -> bool | None:
         try:
-            return self._labeller.label(post, prompt)
+            return self._labeller.label(post, prompt, gate=gate)
         except Exception as e:
             self._log(f"[llm] label failed for {post.source}:{post.id}: {e}")
             return None

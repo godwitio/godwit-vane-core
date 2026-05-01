@@ -5,7 +5,7 @@ from core.models import Post
 
 @dataclass
 class ChannelPreFilterConfig:
-    min_score:         int = 0
+    min_score:         int = -1
     max_age_hours:     float | None = None
     domain_contains:   list[str] = field(default_factory=list)
     domain_excludes:   list[str] = field(default_factory=list)

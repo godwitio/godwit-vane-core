@@ -19,13 +19,17 @@ class AnthropicLabeller(LabellerPort):
         self._log    = logger
         self._client = anthropic.Anthropic(api_key=config.api_key)
 
-    def label(self, post: Post, prompt: str) -> bool | None:
-        tag = f"[llm:anthropic] {post.source}:{post.id}"
+    def label(self, post: Post, prompt: str, gate: str = "") -> bool | None:
+        gate_suffix = f":{gate}" if gate else ""
+        tag = f"[llm:anthropic{gate_suffix}] {post.source}:{post.id}"
         self._log.debug(f"{tag} -> prompt:\n{prompt}")
+        # In debug mode, let the model generate freely so the raw log captures
+        # its full reasoning; in normal runs, max_tokens (10) is enough for YES/NO.
+        max_tokens = 200 if self._log.debug_enabled else self._cfg.max_tokens
         try:
             resp = self._client.messages.create(
                 model=self._cfg.model,
-                max_tokens=self._cfg.max_tokens,
+                max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = resp.content[0].text.strip()
