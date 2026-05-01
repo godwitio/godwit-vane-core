@@ -3,7 +3,16 @@ import os
 from ports.signal_config import SignalConfigPort
 
 
-_REQUIRED = {"keywords", "post_prompt", "comment_prompt"}
+# A JSON file counts as a signal definition iff it has `keywords` plus
+# the four two-gate cascade prompts. Files missing any of these
+# (settings.json, radar.json, …) are filtered out. The adapter is
+# otherwise schema-blind — additional keys round-trip into the loaded
+# dict verbatim (per core-012-json-signals).
+_REQUIRED = frozenset({
+    "keywords",
+    "domain_post_prompt", "domain_comment_prompt",
+    "intent_post_prompt", "intent_comment_prompt",
+})
 
 
 class JsonSignalConfigAdapter(SignalConfigPort):

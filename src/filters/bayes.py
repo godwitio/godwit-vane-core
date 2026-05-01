@@ -1,5 +1,6 @@
 from core.models import Post
 from core.pipeline_factory import build_pipeline
+from filters.signal_prompts import GatePrompts
 from log import Logger
 from ports.classification_store import ClassificationStorePort
 from ports.labeller import LabellerPort
@@ -99,7 +100,7 @@ class ActiveLearner:
         initial = classification_store.load_training(signal_name, kind)
         self._seen_labels: set[int] = {int(label) for _, _, label in initial}
 
-    def classify(self, post: Post, prompt: str,
+    def classify(self, post: Post, prompt: GatePrompts,
                  content_id: int) -> tuple[bool, str] | None:
         text = _truncate(post)
         confidence = self._bayes.predict(text)
@@ -118,13 +119,35 @@ class ActiveLearner:
         else:
             self._log.debug(f"{tag} bayes=cold -> LLM")
 
-        label = self._llm.label(post, prompt)
-        if label is None:
-            self._log.debug(f"{tag} llm=abstain")
-            return None
-        self._log.debug(f"{tag} llm={'YES' if label else 'NO'}")
+        return self._classify_cascade(post, prompt, content_id, tag)
 
-        self._store.save(content_id, self._signal, bool(label), "llm")
+    def _classify_cascade(self, post: Post, prompt: GatePrompts,
+                          content_id: int,
+                          tag: str) -> tuple[bool, str] | None:
+        dom = self._llm.label(post, prompt.domain)
+        if dom is None:
+            self._log.debug(f"{tag} llm:domain=abstain")
+            return None
+        self._log.debug(f"{tag} llm:domain={'YES' if dom else 'NO'}")
+        if not dom:
+            self._persist_and_maybe_retrain(content_id, False, "llm:domain")
+            return False, "llm:domain"
+
+        nt = self._llm.label(post, prompt.intent)
+        if nt is None:
+            self._log.debug(f"{tag} llm:intent=abstain")
+            return None
+        self._log.debug(f"{tag} llm:intent={'YES' if nt else 'NO'}")
+        if not nt:
+            self._persist_and_maybe_retrain(content_id, False, "llm:intent")
+            return False, "llm:intent"
+
+        self._persist_and_maybe_retrain(content_id, True, "llm")
+        return True, "llm"
+
+    def _persist_and_maybe_retrain(self, content_id: int, label: bool,
+                                   decided_by: str) -> None:
+        self._store.save(content_id, self._signal, label, decided_by)
         self._seen_labels.add(int(label))
         self._since_retrain += 1
 
@@ -134,8 +157,6 @@ class ActiveLearner:
         if can_fit and (cadence_hit or cold_start):
             if self._retrain():
                 self._since_retrain = 0
-
-        return label, "llm"
 
     def _retrain(self) -> bool:
         texts, labels = self._load_training()

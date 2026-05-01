@@ -7,6 +7,8 @@
     "migrate from", "migrate to", "leaving", "replaced",
     "ditched", "abandoning"
   ],
-  "post_prompt": "Is this POST about someone actively migrating between <YOUR_CATEGORY> vendors, tools, or platforms?\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
-  "comment_prompt": "Is this COMMENT about an active migration between <YOUR_CATEGORY> vendors or tools?\nComment: {body}\nAnswer YES or NO."
+  "domain_post_prompt": "A POST qualifies ONLY IF it is clearly about <YOUR_CATEGORY> — either explicitly naming <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4> OR using a canonical category noun like <generic_noun_1>, <generic_noun_2>. If the text isn't clearly about <YOUR_CATEGORY>, answer NO.\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
+  "domain_comment_prompt": "A COMMENT qualifies ONLY IF it is clearly about <YOUR_CATEGORY> — either explicitly naming <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4> OR using a canonical category noun like <generic_noun_1>, <generic_noun_2>. If the text isn't clearly about <YOUR_CATEGORY>, answer NO.\nComment: {body}\nAnswer YES or NO.",
+  "intent_post_prompt": "Is this POST about someone migrating, planning to migrate, or evaluating a migration between vendors, tools, or platforms? Include in-flight migrations, planning, and active research; exclude purely retrospective mentions with no forward intent.\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
+  "intent_comment_prompt": "Is this COMMENT about an active migration, a planned migration, or evaluating one between vendors or tools?\nComment: {body}\nAnswer YES or NO."
 }
