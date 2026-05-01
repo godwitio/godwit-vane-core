@@ -2,6 +2,7 @@ from typing import Callable
 from core.keyword_filter import KeywordFilter
 from core.models import Post, SignalHit
 from filters.bayes import ActiveLearner
+from filters.signal_prompts import select_prompts
 
 
 class SignalRouter:
@@ -13,6 +14,27 @@ class SignalRouter:
         self._learners = learners
         self._signals  = signals
         self._log      = logger
+        # Dedup missing-cascade warnings: emit one info-level line per
+        # (signal, kind, reason) per process so operators see which
+        # signal × kind is being skipped without flooding logs per post.
+        self._warned: set[tuple[str, str, str]] = set()
+
+    def _warn_once(self, message: str) -> None:
+        # Extract a stable dedup key from the message prefix:
+        # "signal=<name> kind=<kind> <reason>: ..."
+        try:
+            head, _ = message.split(":", 1)
+            parts = head.split()
+            sig  = next(p.split("=", 1)[1] for p in parts if p.startswith("signal="))
+            kind = next(p.split("=", 1)[1] for p in parts if p.startswith("kind="))
+            reason = parts[-1]
+            key = (sig, kind, reason)
+        except Exception:
+            key = ("", "", message)
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        self._log(f"[router] {message}")
 
     def route(self, post: Post, content_id: int) -> list[SignalHit]:
         hits: list[SignalHit] = []
@@ -24,9 +46,12 @@ class SignalRouter:
             learner = self._learners.get((name, post.kind))
             if learner is None:
                 continue
-            template = definition.get(f"{post.kind}_prompt", "")
-            prompt   = template.replace("{title}", post.title).replace("{body}", post.body)
-            result   = learner.classify(post, prompt, content_id)
+            selected = select_prompts(
+                definition, post.kind, post, self._warn_once, name,
+            )
+            if selected is None:
+                continue
+            result = learner.classify(post, selected, content_id)
             if result is None:
                 continue
             is_relevant, decided_by = result

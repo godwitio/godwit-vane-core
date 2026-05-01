@@ -62,7 +62,7 @@ class SQLiteStore(SeenStorePort, ClassificationStorePort,
               JOIN content c ON c.id = cls.content_id
              WHERE cls.signal_name = ?
                AND c.kind = ?
-               AND cls.decided_by = 'llm'
+               AND cls.decided_by LIKE 'llm%'
              ORDER BY cls.id
             """,
             (signal_name, kind),
@@ -78,7 +78,7 @@ class SQLiteStore(SeenStorePort, ClassificationStorePort,
                    COUNT(*)           AS total
               FROM classifications cls
               JOIN content c ON c.id = cls.content_id
-             WHERE cls.decided_by = 'llm'
+             WHERE cls.decided_by LIKE 'llm%'
              GROUP BY cls.signal_name, c.kind
              ORDER BY cls.signal_name, c.kind
             """

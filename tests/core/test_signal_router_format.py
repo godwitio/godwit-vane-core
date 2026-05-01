@@ -1,8 +1,10 @@
-"""Regression tests pinning the substitution semantics in SignalRouter.
+"""Regression tests pinning the prompt-substitution semantics seen by
+SignalRouter. Substitution itself lives in `filters.signal_prompts._format`
+(used by the two-gate cascade), but the invariants matter at the router
+boundary: a malformed template or a body with stray braces must not crash
+the sifter row.
 
-The router builds the LLM prompt by substituting `{title}` and `{body}` in
-the operator-written template. Until 2026-04, that was `str.format`, which
-raised on:
+Until 2026-04, substitution was `str.format`, which raised on:
 
   - any other named placeholder in the template (KeyError),
   - any positional placeholder like `{0}` (IndexError),
@@ -11,7 +13,7 @@ raised on:
 The fix replaced `template.format(...)` with two literal `str.replace`
 calls. This file pins:
 
-  1. the equivalence with `format` for valid templates, and
+  1. equivalence with `format` for valid templates, and
   2. the new fail-soft behaviour for malformed templates and post bodies
      that previously crashed the sifter row.
 
@@ -20,26 +22,29 @@ Stdlib + fakes only — no SQLite, no LLM, no network.
 
 from core.models import Post
 from core.signal_router import SignalRouter
+from filters.signal_prompts import GatePrompts
 
 
 # ── Fakes ────────────────────────────────────────────────────────────────────
 class _CapturingLearner:
-    """Records the prompt the router built; returns a deterministic hit."""
+    """Records the cascade prompts the router built; returns a deterministic hit."""
 
     def __init__(self) -> None:
-        self.last_prompt: str | None = None
+        self.last_prompt: GatePrompts | None = None
 
-    def classify(self, post: Post, prompt: str, content_id: int):
+    def classify(self, post: Post, prompt: GatePrompts, content_id: int):
         self.last_prompt = prompt
         return True, "bayes"
 
 
-def _make_router(post_prompt: str, learner: _CapturingLearner) -> SignalRouter:
+def _make_router(template: str, learner: _CapturingLearner) -> SignalRouter:
+    # Cascade requires both gates; the brittleness invariants are about
+    # substitution, so reuse the same template on both sides.
     signals = {
         "demo": {
-            "keywords":    ["match"],   # any post title or body containing
-                                        # "match" triggers the route below
-            "post_prompt": post_prompt,
+            "keywords":            ["match"],
+            "domain_post_prompt":  template,
+            "intent_post_prompt":  template,
         }
     }
     learners = {("demo", "post"): learner}
@@ -57,7 +62,9 @@ def test_replaces_title_and_body() -> None:
     learner = _CapturingLearner()
     router  = _make_router("Title: {title}\nBody: {body}", learner)
     router.route(_post(title="match A", body="B"), content_id=1)
-    assert learner.last_prompt == "Title: match A\nBody: B"
+    assert learner.last_prompt is not None
+    assert learner.last_prompt.domain == "Title: match A\nBody: B"
+    assert learner.last_prompt.intent == "Title: match A\nBody: B"
 
 
 def test_body_with_curly_braces_passes_through() -> None:
@@ -67,14 +74,16 @@ def test_body_with_curly_braces_passes_through() -> None:
     learner = _CapturingLearner()
     router  = _make_router("{title}|{body}", learner)
     router.route(_post(title="match", body="What is {name}?"), content_id=1)
-    assert learner.last_prompt == "match|What is {name}?"
+    assert learner.last_prompt is not None
+    assert learner.last_prompt.domain == "match|What is {name}?"
 
 
 def test_body_with_unclosed_brace_passes_through() -> None:
     learner = _CapturingLearner()
     router  = _make_router("{title}|{body}", learner)
     router.route(_post(title="match", body="prefix {oops"), content_id=1)
-    assert learner.last_prompt == "match|prefix {oops"
+    assert learner.last_prompt is not None
+    assert learner.last_prompt.domain == "match|prefix {oops"
 
 
 def test_template_with_unknown_placeholder_left_literal() -> None:
@@ -84,7 +93,8 @@ def test_template_with_unknown_placeholder_left_literal() -> None:
     learner = _CapturingLearner()
     router  = _make_router("foo {category} bar {title}", learner)
     router.route(_post(title="match", body=""), content_id=1)
-    assert learner.last_prompt == "foo {category} bar match"
+    assert learner.last_prompt is not None
+    assert learner.last_prompt.domain == "foo {category} bar match"
 
 
 def test_template_with_positional_placeholder_left_literal() -> None:
@@ -92,7 +102,8 @@ def test_template_with_positional_placeholder_left_literal() -> None:
     learner = _CapturingLearner()
     router  = _make_router("foo {0} bar {title}", learner)
     router.route(_post(title="match", body=""), content_id=1)
-    assert learner.last_prompt == "foo {0} bar match"
+    assert learner.last_prompt is not None
+    assert learner.last_prompt.domain == "foo {0} bar match"
 
 
 def test_template_with_unclosed_brace_left_literal() -> None:
@@ -100,7 +111,8 @@ def test_template_with_unclosed_brace_left_literal() -> None:
     learner = _CapturingLearner()
     router  = _make_router("foo {title bar {title}", learner)
     router.route(_post(title="match", body=""), content_id=1)
-    assert learner.last_prompt == "foo {title bar match"
+    assert learner.last_prompt is not None
+    assert learner.last_prompt.domain == "foo {title bar match"
 
 
 def test_title_value_containing_body_placeholder_does_not_recurse() -> None:
@@ -116,4 +128,5 @@ def test_title_value_containing_body_placeholder_does_not_recurse() -> None:
     router.route(_post(title="{body}", body="REAL match"), content_id=1)
     # `{title}` is replaced first → "T={body} B={body}"
     # `{body}`  is replaced next  → "T=REAL match B=REAL match"
-    assert learner.last_prompt == "T=REAL match B=REAL match"
+    assert learner.last_prompt is not None
+    assert learner.last_prompt.domain == "T=REAL match B=REAL match"

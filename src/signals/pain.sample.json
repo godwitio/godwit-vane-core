@@ -6,6 +6,8 @@
     "expensive", "overpriced", "limit", "limited", "lock-in",
     "bad support", "outage", "downtime", "regret", "fed up"
   ],
-  "post_prompt": "Is this POST about a pain point, frustration, or problem with <YOUR_CATEGORY> (pricing, reliability, support, missing features, etc.)?\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
-  "comment_prompt": "Is this COMMENT about a pain point or frustration with <YOUR_CATEGORY>?\nComment: {body}\nAnswer YES or NO."
+  "domain_post_prompt": "A POST qualifies ONLY IF it is clearly about <YOUR_CATEGORY> — either explicitly naming <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4> OR using a canonical category noun like <generic_noun_1>, <generic_noun_2>. If the text isn't clearly about <YOUR_CATEGORY>, answer NO.\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
+  "domain_comment_prompt": "A COMMENT qualifies ONLY IF it is clearly about <YOUR_CATEGORY> — either explicitly naming <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4> OR using a canonical category noun like <generic_noun_1>, <generic_noun_2>. If the text isn't clearly about <YOUR_CATEGORY>, answer NO.\nComment: {body}\nAnswer YES or NO.",
+  "intent_post_prompt": "Does this POST describe a pain point, frustration, or problem (pricing, reliability, support, missing features, onboarding, performance, cost, etc.)?\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
+  "intent_comment_prompt": "Does this COMMENT describe a pain point or frustration?\nComment: {body}\nAnswer YES or NO."
 }

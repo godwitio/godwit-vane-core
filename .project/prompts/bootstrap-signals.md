@@ -21,12 +21,11 @@ Your job: produce the five JSON files below. Keep placeholders literal —
 
 ## How the runtime classifier uses these prompts
 
-The `post_prompt` / `comment_prompt` fields feed a **local Ollama model**
-(default `qwen2.5:7b`, ~4.7 GB). Users can run smaller models (e.g.
-`phi3.5`, ~2 GB) on weak hardware or larger ones on beefier boxes — the
-prompts should hold up across that range. Local Ollama models in the
-7–8 B class behave in predictable ways that shape how the prompts must
-be written:
+The classifier prompts feed a **local Ollama model** (default
+`qwen2.5:7b`, ~4.7 GB). Users can run smaller models (e.g. `phi3.5`,
+~2 GB) on weak hardware or larger ones on beefier boxes — the prompts
+should hold up across that range. Local Ollama models in the 7–8 B class
+behave in predictable ways that shape how the prompts must be written:
 
 - They answer in **≤ 10 tokens** (YES / NO). No room for reasoning — the
   prompt has to pre-digest the decision.
@@ -39,6 +38,37 @@ be written:
   password managers, because "vs / alternative / recommend" dominate.
 - Abstract category names alone aren't enough. They need concrete **named
   anchors** to match against (specific product / provider / tool names).
+
+### Two gates, not one AND
+
+The runtime no longer asks one AND-joined question. The 10-token output
+budget cannot carry two clauses; the model commits to whichever side has
+stronger vocabulary cues and silently drops the other half ("vocabulary
+hijack"). The structural fix is to ask **two YES/NO questions in
+sequence**, each with the model's full attention:
+
+1. **Domain gate (wide).** "Is this clearly about `<CATEGORY>`?" The
+   anchor list lives here — product names plus generic category nouns.
+   If the model answers NO, the post is rejected and the second call
+   never happens.
+2. **Intent gate (narrow).** Only runs after the domain gate passes.
+   Asks the intent question alone — "does it describe a pain point?",
+   "is someone migrating?", "is this a comparison?" — with no
+   `<CATEGORY>` repetition and no anchor enumeration.
+
+The final label is `YES iff (domain == YES AND intent == YES)`. A NO
+from either gate short-circuits. Background:
+[Khot et al., *Decomposed Prompting* (ICLR 2023)](https://arxiv.org/abs/2210.02406)
+and the standard 3-tier intent-routing cascade used in production LLM
+apps. Both gates use the same `LabellerPort` instance — no model
+routing, no temperature change.
+
+Each signal × kind is carried by exactly four keys:
+`domain_post_prompt`, `domain_comment_prompt`, `intent_post_prompt`,
+`intent_comment_prompt`. If any of the four is missing for a given
+kind, the runtime skips that signal × kind for the post and emits a
+one-time `missing-cascade-prompts` warning so operators can spot
+incomplete configs.
 
 ### Use a positive gate, not a negative blocklist
 
@@ -69,22 +99,25 @@ population of users who self-describe without naming tools — a common
 failure mode that can produce zero hits for months on otherwise active
 subreddits.
 
-Every `post_prompt` / `comment_prompt` you emit must follow this shape:
+Each signal × kind splits across the cascade as follows:
 
-1. **Positive anchor gate** — "qualifies ONLY IF it is clearly about
-   `<CATEGORY>` — either explicitly naming `<product>`, `<competitor_1>`,
-   `<competitor_2>`, `<competitor_3>`, `<competitor_4>` OR using a
-   canonical category noun like `<generic_noun_1>`, `<generic_noun_2>`".
-   Target 4–6 product/tool names plus 2–3 generic category nouns.
-2. **Intent clause second**, joined by an explicit `AND`.
-3. **Fallback closer** — "If the text isn't clearly about `<CATEGORY>`,
-   answer NO."
-4. Runtime placeholders (`{title}` / `{body}`) and the literal closer
-   `Answer YES or NO.`
+- **`domain_*_prompt` (wide gate)** — "qualifies ONLY IF it is clearly
+  about `<CATEGORY>` — either explicitly naming `<product>`,
+  `<competitor_1>`, `<competitor_2>`, `<competitor_3>`, `<competitor_4>`
+  OR using a canonical category noun like `<generic_noun_1>`,
+  `<generic_noun_2>`. If the text isn't clearly about `<CATEGORY>`,
+  answer NO." Target 4–6 product/tool names plus 2–3 generic category
+  nouns. **Byte-for-byte identical** across `pain.json`, `migration.json`,
+  and `comparison.json`.
+- **`intent_*_prompt` (narrow gate)** — the intent clause alone (pain /
+  migration / comparison). No `<CATEGORY>` repetition, no anchor
+  enumeration — those belong to the domain gate.
+- Both prompts end with the runtime placeholders (`{title}` / `{body}`)
+  and the literal closer `Answer YES or NO.`
 
-Do **not** wrap the prompt in step-by-step or chain-of-thought framing —
-the model has no output budget for it and will produce junk. Keep the
-prompt declarative and front-loaded.
+Do **not** wrap either prompt in step-by-step or chain-of-thought
+framing — the model has no output budget for it and will produce junk.
+Keep prompts declarative and front-loaded.
 
 Tuning the gate: if early signal volume is too low, widen the
 generic-noun set before adding more product names — generic nouns are
@@ -94,6 +127,10 @@ beats "storage", "headless CMS" beats "CMS", "managed postgres" beats
 "database"). A names-only gate is the common failure case — it looks
 safe but can starve the classifier of input for long stretches while
 looking like the system is working.
+
+The positive gate described above is the **domain gate** in the
+two-gate cascade. The intent clause runs as a separate, narrower
+prompt; it does not repeat the `<CATEGORY>` text or enumerate anchors.
 
 ## Step 1 — gather inputs
 
@@ -169,40 +206,57 @@ Exact-match alerts. Literal strings only — skip generic words.
 
 ### `pain.json`
 
+Each signal carries exactly four prompts — the cascade keys
+`domain_post_prompt`, `domain_comment_prompt`, `intent_post_prompt`,
+`intent_comment_prompt`.
+
 ```json
 {
   "emoji": "😤",
   "label": "pain point",
   "keywords": ["frustrated", "slow", "stuck", "expensive", "..."],
-  "post_prompt": "A POST qualifies ONLY IF it is clearly about <CATEGORY> — either explicitly naming <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4> OR using a canonical category noun like <generic_noun_1>, <generic_noun_2> — AND it describes a pain point, frustration, or problem with such a product or service (pricing, reliability, support, missing features, onboarding, performance, cost, etc.). If the text isn't clearly about <CATEGORY>, answer NO.\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
-  "comment_prompt": "A COMMENT qualifies ONLY IF it is clearly about <CATEGORY> — either explicitly naming <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4> OR using a canonical category noun like <generic_noun_1>, <generic_noun_2> — AND it describes a pain point or frustration with such a product or service. If the text isn't clearly about <CATEGORY>, answer NO.\nComment: {body}\nAnswer YES or NO."
+  "domain_post_prompt": "A POST qualifies ONLY IF it is clearly about <CATEGORY> — either explicitly naming <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4> OR using a canonical category noun like <generic_noun_1>, <generic_noun_2>. If the text isn't clearly about <CATEGORY>, answer NO.\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
+  "domain_comment_prompt": "A COMMENT qualifies ONLY IF it is clearly about <CATEGORY> — either explicitly naming <anchor_1>, <anchor_2>, <anchor_3>, <anchor_4> OR using a canonical category noun like <generic_noun_1>, <generic_noun_2>. If the text isn't clearly about <CATEGORY>, answer NO.\nComment: {body}\nAnswer YES or NO.",
+  "intent_post_prompt": "Does this POST describe a pain point, frustration, or problem (pricing, reliability, support, missing features, onboarding, performance, cost, etc.)?\nTitle: {title}\nBody: {body}\nAnswer YES or NO.",
+  "intent_comment_prompt": "Does this COMMENT describe a pain point or frustration?\nComment: {body}\nAnswer YES or NO."
 }
 ```
 
+The two `domain_*` prompts are the wide gate — emit them **verbatim
+identical** in `pain.json`, `migration.json`, and `comparison.json`.
+One anchor list, three copies; if you edit one later, keep the other
+two in sync. The two `intent_*` prompts differ per signal.
+
 ### `migration.json`
 
-Same shape. `emoji: "🚨"`, `label: "active migration"`. Keywords around
-switching / moving off / replacing / planning to switch. Both prompts
-follow the same structure: positive anchor gate (product/tool names
-**and** generic category nouns from item 4), AND an intent clause about
-someone **migrating, planning to migrate, or evaluating a migration**
-between tools in that category — include in-flight migrations ("we're
-moving off X"), planning ("planning to switch from X to Y"), and active
-research ("has anyone migrated from X to Y?"). Exclude purely
-retrospective mentions with no forward intent ("we migrated years ago
-and it was fine"). Use the fallback closer "If the text isn't clearly
-about `<CATEGORY>`, answer NO." End with the `{title}` / `{body}`
-placeholders and `Answer YES or NO.`
+Same shape as `pain.json`. `emoji: "🚨"`, `label: "active migration"`.
+Keywords around switching / moving off / replacing / planning to switch.
+
+The `domain_post_prompt` and `domain_comment_prompt` are **byte-for-byte
+identical** to the ones in `pain.json` and `comparison.json` — same
+anchor list, same `<CATEGORY>` text, same fallback closer.
+
+The `intent_post_prompt` / `intent_comment_prompt` ask only about
+migration intent: someone **migrating, planning to migrate, or
+evaluating a migration** between tools — include in-flight migrations
+("we're moving off X"), planning ("planning to switch from X to Y"),
+and active research ("has anyone migrated from X to Y?"). Exclude
+purely retrospective mentions with no forward intent ("we migrated
+years ago and it was fine"). Do not repeat `<CATEGORY>` or enumerate
+anchors in the intent prompt — those belong to the domain gate.
 
 ### `comparison.json`
 
-Same shape. `emoji: "⚖️"`, `label: "comparison"`. Keywords around
-versus / alternatives / "which is better" / recommendations. Both prompts
-follow the same structure: positive anchor gate (product/tool names
-**and** generic category nouns from item 4), AND an intent clause about
-comparing options or asking for recommendations, with the fallback closer
-"If the text isn't clearly about `<CATEGORY>`, answer NO." End with the
-`{title}` / `{body}` placeholders and `Answer YES or NO.`
+Same shape as `pain.json`. `emoji: "⚖️"`, `label: "comparison"`.
+Keywords around versus / alternatives / "which is better" /
+recommendations.
+
+The `domain_post_prompt` and `domain_comment_prompt` are **byte-for-byte
+identical** to the ones in `pain.json` and `migration.json`.
+
+The `intent_post_prompt` / `intent_comment_prompt` ask only about
+comparing options or asking for recommendations — no anchor
+enumeration, no `<CATEGORY>` repetition.
 
 ### `settings.json`
 
@@ -257,14 +311,23 @@ and wait for a new **yes** before producing downloads.
   `<generic_noun_N>` with generic category nouns from item 4. Replace
   every `<product>` / `<competitor_N>` with values from items 1 and 4.
   No angle-bracket placeholders left behind in the final JSON.
-- Every classifier prompt must use the **positive-gate** structure:
-  anchors (product names **and** generic category nouns) → AND-joined
-  intent clause → "If the text isn't clearly about `<CATEGORY>`, answer
-  NO." Do **not** emit negative "answer NO if about Kubernetes /
-  databases / …" blocklists — they don't scale and are the wrong shape.
-  Do **not** build a names-only gate without generic nouns — it looks
+- Every signal must emit exactly four cascade keys —
+  `domain_post_prompt`, `domain_comment_prompt`, `intent_post_prompt`,
+  `intent_comment_prompt` — and no others. The legacy `post_prompt` /
+  `comment_prompt` keys have been removed; do not emit them.
+- The `domain_*` prompts are the **positive gate**: anchors (product
+  names **and** generic category nouns) plus the closer "If the text
+  isn't clearly about `<CATEGORY>`, answer NO." No intent language in
+  the domain half. Emit the two `domain_*` prompts byte-for-byte
+  identical across `pain.json`, `migration.json`, and
+  `comparison.json`. Do **not** emit negative "answer NO if about
+  Kubernetes / databases / …" blocklists — they don't scale. Do
+  **not** build a names-only gate without generic nouns — it looks
   safe but silently misses self-descriptions and can starve the
   classifier for long stretches.
+- The `intent_*` prompts ask the intent question alone (pain /
+  migration / comparison). No `<CATEGORY>` repetition, no anchor
+  enumeration — those belong to the domain gate.
 - Keep `{title}` and `{body}` verbatim — Core formats them at runtime.
 - Keep prompts declarative. No "step 1 / step 2", no "think carefully",
   no chain-of-thought preamble — the runtime model has a 10-token output

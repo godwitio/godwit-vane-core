@@ -70,3 +70,4 @@ Target precision (share of accepts that aren't false positives): >70% after
 - [core-010](core-010-bayes-parameters.md) — why alpha=0.3, why adaptive min_df.
 - [app/feature-classification.md](../app/feature-classification.md) — pipeline implementation.
 - [app/feature-prefilters.md](../app/feature-prefilters.md) — stage 1 details.
+- [app/archive/plan/two-gate-llm-classification-plan.md](../app/archive/plan/two-gate-llm-classification-plan.md) — refinement of stage 3 (LLM): split the single AND-joined prompt into a domain gate + intent gate cascade. Decision text above is unchanged.
