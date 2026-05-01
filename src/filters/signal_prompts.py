@@ -23,7 +23,12 @@ class GatePrompts(NamedTuple):
 
 
 def _format(template: str, post: Post) -> str:
-    return template.format(title=post.title, body=post.body)
+    # Two literal str.replace calls instead of str.format: the operator-
+    # written template, the post title, and the post body all routinely
+    # contain stray `{...}` (code blocks, JSON, "What is {name}?"). Format
+    # raises KeyError / IndexError / ValueError on those; replace passes
+    # them through verbatim. Order matters: title first, then body.
+    return template.replace("{title}", post.title).replace("{body}", post.body)
 
 
 def select_prompts(
