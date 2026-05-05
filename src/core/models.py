@@ -32,6 +32,7 @@ class SignalHit:
     post:        Post
     signal_name: str
     decided_by:  str              # "bayes" | "llm"
+    confidence:  float | None = None
 
 
 @dataclass

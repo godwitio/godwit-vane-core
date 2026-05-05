@@ -23,3 +23,8 @@ class ClassificationStorePort(ABC):
     def llm_label_counts(self) -> list[tuple[str, str, int, int, int]]:
         """Return [(signal_name, kind, neg_count, pos_count, total)] across all
         LLM-decided classifications. Used by the reset summary."""
+
+    @abstractmethod
+    def record_retrain(self, signal_name: str, kind: str,
+                       sample_count: int) -> None:
+        """Persist that a Bayes model was successfully retrained."""

@@ -38,6 +38,9 @@ class FakeClassificationStore(ClassificationStorePort):
     def llm_label_counts(self):  # pragma: no cover — unused here
         return []
 
+    def record_retrain(self, signal_name, kind, sample_count):
+        pass
+
 
 class ScriptedLabeller(LabellerPort):
     """Returns next pre-set value per call. Records the prompts it saw."""
@@ -111,7 +114,7 @@ def test_cascade_both_yes_two_calls_decided_by_llm():
 
     result = learner.classify(_post(), _GATES, content_id=7)
 
-    assert result == (True, "llm")
+    assert result == (True, "llm", None)
     assert [c[1] for c in llm.calls] == ["DOMAIN-PROMPT", "INTENT-PROMPT"]
     assert len(store.saves) == 1
     assert store.saves[0].decided_by == "llm"
@@ -127,7 +130,7 @@ def test_cascade_domain_no_short_circuits():
 
     result = learner.classify(_post(), _GATES, content_id=11)
 
-    assert result == (False, "llm:domain")
+    assert result == (False, "llm:domain", None)
     assert len(llm.calls) == 1
     assert llm.calls[0][1] == "DOMAIN-PROMPT"
     assert len(store.saves) == 1
@@ -144,7 +147,7 @@ def test_cascade_intent_no_two_calls_decided_by_llm_intent():
 
     result = learner.classify(_post(), _GATES, content_id=13)
 
-    assert result == (False, "llm:intent")
+    assert result == (False, "llm:intent", None)
     assert len(llm.calls) == 2
     assert len(store.saves) == 1
     assert store.saves[0].decided_by == "llm:intent"
@@ -192,7 +195,7 @@ def test_bayes_confident_yes_short_circuits_before_gates():
 
     result = learner.classify(_post(), _GATES, content_id=23)
 
-    assert result == (True, "bayes")
+    assert result == (True, "bayes", 0.9)
     assert llm.calls == []
     assert len(store.saves) == 1
     assert store.saves[0].decided_by == "bayes"
@@ -207,7 +210,7 @@ def test_bayes_confident_no_short_circuits_before_gates():
 
     result = learner.classify(_post(), _GATES, content_id=29)
 
-    assert result == (False, "bayes")
+    assert result == (False, "bayes", 0.1)
     assert llm.calls == []
     assert len(store.saves) == 1
     assert store.saves[0].decided_by == "bayes"

@@ -63,13 +63,27 @@ class PipelineWidget(_Card):
     """Pacer → Harvester → Sifter → Notifier with queue depths."""
 
     def update(self, c: PipelineCounts) -> None:  # type: ignore[override]
-        next_min = c.next_scan_seconds // 60
-        next_sec = c.next_scan_seconds % 60
+        if c.pacer_state == "running":
+            pacer_label = "scanning"
+            last_line = f"scanning — queuing {c.last_scheduled} discover tasks"
+        elif c.pacer_state == "scheduled":
+            next_min = c.next_scan_seconds // 60
+            next_sec = c.next_scan_seconds % 60
+            pacer_label = "waiting"
+            ago_m = c.last_scan_seconds_ago // 60
+            ago_s = c.last_scan_seconds_ago % 60
+            last_line = (
+                f"last scan {ago_m}m{ago_s:02d}s ago ({c.last_scheduled} enqueued)"
+                f"  |  next in {next_min}m{next_sec:02d}s"
+            )
+        else:
+            pacer_label = "idle"
+            last_line = "no scan yet"
         body = (
             f"Pacer  >  Harvester  >  Sifter   >  Notifier\n"
-            f"{c.pacer_state:<8} q={c.harv_pending:<6} q={c.sift_pending:<5} q={c.noti_pending}\n"
+            f"{pacer_label:<10} q={c.harv_pending:<6} q={c.sift_pending:<5} q={c.noti_pending}\n"
             f"5m: harvest={c.last_5m_harvest}  sift={c.last_5m_sift}  notified={c.last_5m_notified}\n"
-            f"next scan in {next_min}m{next_sec:02d}s"
+            f"{last_line}"
         )
         super().update(body)
 
@@ -95,8 +109,9 @@ class SignalsWidget(_Card):
         lines = []
         for r in rows[:8]:
             model = "trained" if r.has_model else "none"
+            project = (r.project[:10] if r.project else "-")
             lines.append(
-                f"  {r.name:<22} {r.hits_24h:>4}  "
+                f"  {project:<10} {r.name:<22} {r.hits_24h:>4}  "
                 f"{r.pos_samples}/{r.neg_samples:<6}  {model}"
             )
         super().update("\n".join(lines))
@@ -303,12 +318,13 @@ class CascadeScreen(_TableDetailScreen):
 
 class SignalsScreen(_TableDetailScreen):
     title_text = "Signals  -  press Esc to go back"
-    columns = ("signal", "hits/24h", "pos", "neg", "model")
+    columns = ("project", "signal", "hits/24h", "pos", "neg", "model")
 
     def refresh_data(self, metrics: TuiMetrics) -> None:
         self._table.clear()
         for r in metrics.signals():
             self._table.add_row(
+                r.project or "-",
                 r.name,
                 str(r.hits_24h),
                 str(r.pos_samples),
@@ -349,6 +365,8 @@ class MatchesScreen(_TableDetailScreen):
     def refresh_data(self, metrics: TuiMetrics) -> None:
         self._table.clear()
         for r in metrics.matches(limit=200):
+            if r.confidence <= 0.0:
+                continue
             title = (r.title[:60] + "...") if len(r.title) > 60 else r.title
             self._table.add_row(
                 r.when,

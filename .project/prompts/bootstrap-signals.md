@@ -2,12 +2,12 @@
 
 Paste the block below into a Claude chat (claude.ai, the `claude` CLI, or any
 Claude-backed assistant) **together with your product's landing-page URL** to
-generate the five JSON files that live in `core/src/signals/`. Claude will
-fetch the URL, pre-fill best-guess answers for each input, and ask you to
-confirm or correct before emitting the files.
+generate the five JSON files that live in a project folder under
+`core/src/signals/`. Claude will fetch the URL, pre-fill best-guess answers
+for each input, and ask you to confirm or correct before emitting the files.
 
 Intended to be run once during onboarding — see
-[GETTING_STARTED.md](../../GETTING_STARTED.md) step 7.
+[GETTING_STARTED.md](../../GETTING_STARTED.md) step 6.
 
 ---
 
@@ -298,8 +298,9 @@ available, create five separate artifacts — one per file — rather than a
 single bundle. The file contents must match the previewed JSON byte-for-byte
 (no extra comments, no trailing commas).
 
-Close with a one-line reminder to drop the files into `core/src/signals/`
-and that `.sample.json` files are ignored by the loader.
+Close with a one-line reminder to drop the files into `core/src/signals/<project>/`
+(create the folder if it doesn't exist) and that `.sample.json` files are
+ignored by the loader.
 
 If I ask for edits after the preview, re-show the updated previews first
 and wait for a new **yes** before producing downloads.

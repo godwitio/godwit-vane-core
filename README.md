@@ -17,9 +17,10 @@ notifications through Apprise.
 
 ## What it does
 
-- **Signals as JSON.** Drop a file into [src/signals/](src/signals/) to
-  monitor a new signal — no code change. Ships with `pain`, `migration`,
-  `comparison`.
+- **Signals as JSON.** Drop a JSON file into a project subfolder under
+  [src/signals/](src/signals/) to monitor a new signal — no code change.
+  The bundled [sample-project/](src/signals/sample-project/) ships with
+  `pain`, `migration`, and `comparison` templates.
 - **Hybrid pipeline that learns.** Cheap pre-filters → per-signal **trained
   Bayes classifier** → LLM label. Fetched content isn't matched by keywords
   alone: a ComplementNB model per signal decides the confident cases
@@ -35,8 +36,8 @@ notifications through Apprise.
 - **Content-hash dedup.** Same content seen across subreddits / reposted
   threads is recognised and collapsed.
 - **Radar.** Exact-match keyword scan (brand / product mentions) runs
-  alongside signal classification — configured in
-  [src/signals/radar.json](src/signals/radar.json). See
+  alongside signal classification — configured per project in
+  `src/signals/<project>/radar.json`. See
   [Signals vs. Radar](#signals-vs-radar) below.
 - **Apprise notifications.** Discord, Telegram, Slack, ntfy, email, and
   ~90 other targets via one `APPRISE_URLS` setting.
@@ -127,6 +128,10 @@ the queue drains.
 python src/monitor.py --seed-only
 ```
 
+```bash
+python src/monitor.py --seed-only --project godwit
+```
+
 Runs a one-shot historical backfill end-to-end: Brave Search discovers
 Reddit post IDs → Harvester fetches each via Reddit's JSON endpoint →
 Sifter classifies → Notifier fires. The **Pacer never starts**, so there
@@ -142,6 +147,10 @@ Use it to bootstrap Bayes training data on a fresh install, or to
 backfill a newly-added channel or signal without waiting for live RSS
 discovery to accumulate examples.
 
+Pass `--project <name>` to limit the run to a single project directory
+under `src/signals/`. If `--project` is omitted, `--seed-only` seeds all
+configured projects.
+
 Requires `BRAVE_SEARCH_API_KEY` in `.env` (get one at
 <https://api-dashboard.search.brave.com/>). The flag forces seeding on
 regardless of `BRAVE_SEED_ENABLED`. Completion is recorded per
@@ -150,12 +159,12 @@ invocations only re-query pairs that haven't been seeded yet.
 
 ## Configuration
 
-- **Signals** — [src/signals/\*.json](src/signals/). Each file defines a
-  signal (keywords, pre-filter rules, Bayes threshold, LLM prompt).
-- **Radar keywords** — [src/signals/radar.json](src/signals/radar.json).
-  Exact strings to alert on (your brand names, product names, article
-  slugs). One vane instance per product.
-- **Channels and pre-filters** — [src/signals/settings.json](src/signals/settings.json).
+- **Signals** — `src/signals/<project>/*.json`. Each file defines a signal
+  (keywords, pre-filter rules, Bayes threshold, LLM prompt). Group signals
+  by project — one subdirectory per monitored product.
+- **Radar keywords** — `src/signals/<project>/radar.json`.
+  Exact strings to alert on (your brand names, product names, article slugs).
+- **Channels and pre-filters** — `src/signals/<project>/settings.json`.
   Which subreddits / communities to scan, scan interval, retention.
 - **Notifications** — `APPRISE_URLS` in `.env` (comma-separated).
   Full target list: <https://github.com/caronc/apprise/wiki>.
@@ -173,7 +182,7 @@ hit, both, or neither.
 | **Question it answers** | "Is this post *about* a topic I care about?" | "Does this post *mention something specific I own*?" |
 | **Match logic** | Keyword pre-filter → trained Bayes classifier → LLM fallback on the uncertain middle band | Plain substring match. No ML, no LLM. |
 | **Output** | `SignalHit` with `confidence` and `decided_by` (bayes / llm) | `RadarHit` with the exact `keyword` that matched |
-| **Configured in** | [src/signals/\*.json](src/signals/) — one file per signal, shared taxonomy | [src/signals/radar.json](src/signals/radar.json) — per-deployment keyword list |
+| **Configured in** | `src/signals/<project>/*.json` — one file per signal per project | `src/signals/<project>/radar.json` — per-project keyword list |
 | **Typical entries** | `pain`, `migration`, `comparison` | `"plumpkin"`, `"invoice-ocr-pro"`, `"/blog/my-article"` |
 | **Channels scanned** | `channels.<source>.market` in `settings.json` | `channels.<source>.radar` in `settings.json` |
 

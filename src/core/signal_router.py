@@ -8,11 +8,17 @@ from filters.signal_prompts import select_prompts
 class SignalRouter:
 
     def __init__(self,
-                 learners: dict[tuple[str, str], ActiveLearner],
-                 signals:  dict,
-                 logger:   Callable[[str], None]):
+                 learners:           dict[tuple[str, str], ActiveLearner],
+                 signals_by_channel: dict[tuple[str, str], dict],
+                 logger:             Callable[[str], None]):
+        """
+        signals_by_channel: maps (source, channel) -> { signal_name: signal_def }.
+        A post coming in via that (source, channel) is only evaluated against
+        the signals scoped to it (project-level scoping). Channels listed in
+        multiple projects get a merged view at construction time.
+        """
         self._learners = learners
-        self._signals  = signals
+        self._by_chan  = signals_by_channel
         self._log      = logger
         # Dedup missing-cascade warnings: emit one info-level line per
         # (signal, kind, reason) per process so operators see which
@@ -40,8 +46,9 @@ class SignalRouter:
         hits: list[SignalHit] = []
         text = (post.title + " " + post.body).strip()
 
-        for name, definition in self._signals.items():
-            if not KeywordFilter.signal_hit(text, name, self._signals):
+        signals = self._by_chan.get((post.source, post.channel), {})
+        for name, definition in signals.items():
+            if not KeywordFilter.signal_hit(text, name, signals):
                 continue
             learner = self._learners.get((name, post.kind))
             if learner is None:
@@ -54,10 +61,11 @@ class SignalRouter:
             result = learner.classify(post, selected, content_id)
             if result is None:
                 continue
-            is_relevant, decided_by = result
+            is_relevant, decided_by, confidence = result
             if not is_relevant:
                 continue
-            hits.append(SignalHit(post=post, signal_name=name, decided_by=decided_by))
+            hits.append(SignalHit(post=post, signal_name=name, decided_by=decided_by,
+                                  confidence=confidence))
             mark = "🧠" if decided_by == "bayes" else "🤖"
             self._log(f"  {mark} {name} hit: {post.url}")
         return hits

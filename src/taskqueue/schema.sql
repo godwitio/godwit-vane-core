@@ -116,3 +116,11 @@ CREATE TABLE IF NOT EXISTS seeding_state (
     seeded_at  REAL NOT NULL,
     PRIMARY KEY (channel, signal)
 );
+
+CREATE TABLE IF NOT EXISTS bayes_retrains (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_name  TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    retrained_at REAL NOT NULL
+);

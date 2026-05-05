@@ -13,23 +13,32 @@ import time
 from dataclasses import dataclass
 
 
-# In-memory hint set by a tap in monitor.py whenever the Pacer ticks.
-# The TUI uses this together with SCAN_INTERVAL_MINUTES to compute a
-# "next scan in N seconds" countdown. A v1 fallback of 0 is used until
-# the first tick is observed.
+# In-memory state updated by monitor.py around each Pacer tick.
 LAST_TICK: float = 0.0
+PACER_RUNNING: bool = False
+LAST_SCHEDULED: int = 0
 
 
-def note_tick() -> None:
-    """Record that the Pacer just ran a tick. Called from monitor.py."""
-    global LAST_TICK
+def note_running() -> None:
+    """Called immediately before Pacer.tick() fires."""
+    global PACER_RUNNING
+    PACER_RUNNING = True
+
+
+def note_tick(scheduled: int = 0) -> None:
+    """Called immediately after Pacer.tick() completes."""
+    global LAST_TICK, PACER_RUNNING, LAST_SCHEDULED
     LAST_TICK = time.time()
+    PACER_RUNNING = False
+    LAST_SCHEDULED = scheduled
 
 
 @dataclass(frozen=True)
 class PipelineCounts:
     pacer_state: str            # "idle" | "scheduled" | "running"
     next_scan_seconds: int
+    last_scan_seconds_ago: int  # seconds since last tick; -1 if never
+    last_scheduled: int         # discover tasks enqueued in the most recent tick
     harv_pending: int
     sift_pending: int
     noti_pending: int
@@ -66,6 +75,7 @@ class TodayCounts:
 @dataclass(frozen=True)
 class SignalRow:
     name: str
+    project: str
     hits_24h: int
     pos_samples: int
     neg_samples: int
@@ -143,17 +153,24 @@ class TuiMetrics:
             (cutoff,),
         )
 
-        if LAST_TICK <= 0.0:
+        if PACER_RUNNING:
+            state    = "running"
             next_scan = 0
+        elif LAST_TICK <= 0.0:
             state     = "idle"
+            next_scan = 0
         else:
             elapsed   = int(now - LAST_TICK)
             next_scan = max(0, self._scan_seconds - elapsed)
             state     = "scheduled"
 
+        last_scan_ago = int(now - LAST_TICK) if LAST_TICK > 0.0 else -1
+
         return PipelineCounts(
-            pacer_state       = state,
-            next_scan_seconds = next_scan,
+            pacer_state           = state,
+            next_scan_seconds     = next_scan,
+            last_scan_seconds_ago = last_scan_ago,
+            last_scheduled        = LAST_SCHEDULED,
             harv_pending      = harv_pending,
             sift_pending      = sift_pending,
             noti_pending      = noti_pending,
@@ -264,13 +281,15 @@ class TuiMetrics:
             "WHERE decided_by LIKE 'llm%' AND created_at >= ?",
             (cutoff,),
         )
-        # Bayes retrains: not persisted in v1; the in-memory counter
-        # resets on restart per invariants.md § 1.3.
+        bayes_retrains = self._scalar(
+            "SELECT COUNT(*) FROM bayes_retrains WHERE retrained_at >= ?",
+            (cutoff,),
+        )
         return TodayCounts(
             items_seen       = items_seen,
             matches_notified = matches_notified,
             llm_calls        = llm_calls,
-            bayes_retrains   = 0,
+            bayes_retrains   = bayes_retrains,
         )
 
     # ── Signals ──────────────────────────────────────────────────────────
@@ -292,16 +311,37 @@ class TuiMetrics:
         hits = {r[0]: int(r[1]) for r in hits_rows}
 
         rows: list[SignalRow] = []
-        for name in sorted(signals.keys()):
-            neg, pos = counts.get(name, (0, 0))
+        for cid in sorted(signals.keys()):
+            sig = signals.get(cid, {}) or {}
+            project, human_name = self._resolve_project_name(cid, sig)
+            neg, pos = counts.get(cid, (0, 0))
             rows.append(SignalRow(
-                name         = name,
-                hits_24h     = hits.get(name, 0),
+                name         = human_name,
+                project      = project,
+                hits_24h     = hits.get(cid, 0),
                 pos_samples  = pos,
                 neg_samples  = neg,
-                has_model    = self._has_any_model(name),
+                has_model    = self._has_any_model(cid),
             ))
         return rows
+
+    @staticmethod
+    def _resolve_project_name(key: str, sig: dict) -> tuple[str, str]:
+        """Pull project + human signal name from the loaded signal dict.
+
+        Prefers the injected `_project` / `_name` keys (set by
+        `JsonSignalConfigAdapter.load()`); falls back to splitting the
+        composite ID `<project>__<name>` for resilience against alternate
+        adapters or hand-rolled fakes.
+        """
+        project = sig.get("_project")
+        name    = sig.get("_name")
+        if project and name:
+            return (project, name)
+        if "__" in key:
+            proj, _, n = key.partition("__")
+            return (proj, n)
+        return ("", key)
 
     # ── Matches ──────────────────────────────────────────────────────────
     def matches(self, limit: int = 25) -> list[MatchRow]:

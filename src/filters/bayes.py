@@ -101,7 +101,7 @@ class ActiveLearner:
         self._seen_labels: set[int] = {int(label) for _, _, label in initial}
 
     def classify(self, post: Post, prompt: GatePrompts,
-                 content_id: int) -> tuple[bool, str] | None:
+                 content_id: int) -> tuple[bool, str, float | None] | None:
         text = _truncate(post)
         confidence = self._bayes.predict(text)
         tag = f"[classify:{self._signal}:{self._kind}] {post.source}:{post.id}"
@@ -110,11 +110,11 @@ class ActiveLearner:
             if confidence >= CONFIDENT_YES:
                 self._log.debug(f"{tag} bayes={confidence:.3f} -> YES")
                 self._store.save(content_id, self._signal, True, "bayes")
-                return True, "bayes"
+                return True, "bayes", confidence
             if confidence <= CONFIDENT_NO:
                 self._log.debug(f"{tag} bayes={confidence:.3f} -> NO")
                 self._store.save(content_id, self._signal, False, "bayes")
-                return False, "bayes"
+                return False, "bayes", confidence
             self._log.debug(f"{tag} bayes={confidence:.3f} (uncertain) -> LLM")
         else:
             self._log.debug(f"{tag} bayes=cold -> LLM")
@@ -123,7 +123,7 @@ class ActiveLearner:
 
     def _classify_cascade(self, post: Post, prompt: GatePrompts,
                           content_id: int,
-                          tag: str) -> tuple[bool, str] | None:
+                          tag: str) -> tuple[bool, str, float | None] | None:
         dom = self._llm.label(post, prompt.domain, gate="domain")
         if dom is None:
             self._log.debug(f"{tag} llm:domain=abstain")
@@ -131,7 +131,7 @@ class ActiveLearner:
         self._log.debug(f"{tag} llm:domain={'YES' if dom else 'NO'}")
         if not dom:
             self._persist_and_maybe_retrain(content_id, False, "llm:domain")
-            return False, "llm:domain"
+            return False, "llm:domain", None
 
         nt = self._llm.label(post, prompt.intent, gate="intent")
         if nt is None:
@@ -140,10 +140,10 @@ class ActiveLearner:
         self._log.debug(f"{tag} llm:intent={'YES' if nt else 'NO'}")
         if not nt:
             self._persist_and_maybe_retrain(content_id, False, "llm:intent")
-            return False, "llm:intent"
+            return False, "llm:intent", None
 
         self._persist_and_maybe_retrain(content_id, True, "llm")
-        return True, "llm"
+        return True, "llm", 1.0
 
     def _persist_and_maybe_retrain(self, content_id: int, label: bool,
                                    decided_by: str) -> None:
@@ -160,7 +160,10 @@ class ActiveLearner:
 
     def _retrain(self) -> bool:
         texts, labels = self._load_training()
-        return self._bayes.train(texts, labels)
+        ok = self._bayes.train(texts, labels)
+        if ok:
+            self._store.record_retrain(self._signal, self._kind, len(texts))
+        return ok
 
     def _load_training(self) -> tuple[list[str], list[int]]:
         rows = self._store.load_training(self._signal, self._kind)

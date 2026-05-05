@@ -57,7 +57,16 @@ def _compose_digest(hits: dict[str, list[SignalHit]],
         if not items:
             continue
         sig = signals.get(name, {})
-        header = f"{sig.get('emoji', '•')} **{sig.get('label', name.upper())}** ({len(items)})"
+        # `name` is the composite ID `<project>__<signal>`. Prefer the
+        # injected `_project` / `_name` for display so headers read as
+        # "godwit / PAIN" rather than "GODWIT__PAIN".
+        project    = sig.get("_project", "")
+        human_name = sig.get("_name") or name
+        label      = sig.get("label", human_name.upper())
+        prefix     = f"{project} / " if project else ""
+        header = (
+            f"{sig.get('emoji', '•')} **{prefix}{label}** ({len(items)})"
+        )
         lines.append("")
         lines.append(header)
         for h in items:

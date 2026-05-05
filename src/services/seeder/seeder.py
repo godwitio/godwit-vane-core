@@ -20,7 +20,7 @@ from ports.seen_store import SeenStorePort
 from ports.task_queue import TaskQueuePort
 from services.seeder.query_builder import build_queries
 from services.seeder.url_extract import extract_post_id
-from sources.brave.search import BraveSearchClient
+from sources.brave.search import BraveHit, BraveSearchClient
 from sources.errors import PermanentError, RetryableError
 from workers.rate_limiter import RateLimiter
 
@@ -35,10 +35,13 @@ class SeederConfig:
 class Seeder:
     """Startup seeder: Brave Search → Reddit post IDs → task queue.
 
-    Iterates `channels["reddit"]` (Brave discovers Reddit URLs only), and
-    for every signal configured in `signals_fn()`, builds per-window queries
-    and enqueues matching posts via the existing Reddit enrich/comments
-    pipeline.
+    Iterates the explicit (reddit-channel, signal-name) pairs supplied at
+    construction time and, for each, builds per-window queries from the
+    signal's keywords (looked up via `signals_fn()`) and enqueues matching
+    posts via the existing Reddit enrich/comments pipeline. Pairs are
+    project-scoped upstream so a signal is only seeded against its own
+    project's channels — not the cross-product of all channels and all
+    signals.
     """
 
     def __init__(self,
@@ -48,7 +51,7 @@ class Seeder:
                  seen:          SeenStorePort,
                  state:         SeedingStatePort,
                  signals_fn:    Callable[[], dict],
-                 channels:      dict[str, list[str]],
+                 pairs:         list[tuple[str, str]],
                  config:        SeederConfig,
                  logger:        Logger):
         self._brave    = brave
@@ -57,9 +60,23 @@ class Seeder:
         self._seen     = seen
         self._state    = state
         self._signals  = signals_fn
-        self._channels = channels
+        self._pairs    = list(pairs)
         self._cfg      = config
         self._log      = logger
+
+    def _search_window(self, channel: str, signal: str,
+                       query: str, date_from: date, date_to: date) -> list[BraveHit]:
+        while True:
+            self._limiter.wait()
+            try:
+                return self._brave.search(query, date_from, date_to)
+            except RetryableError as e:
+                retry = e.retry_after or 60
+                self._log(
+                    f"[seed] reddit:{channel} × {signal} — {e}; "
+                    f"retrying this window in {retry:.0f}s"
+                )
+                time.sleep(retry)
 
     def run(self) -> None:
         signals = self._signals() or {}
@@ -67,16 +84,12 @@ class Seeder:
             self._log("[seed] no signals configured — skipping")
             return
 
-        reddit_channels = self._channels.get("reddit") or []
-        if not reddit_channels:
-            self._log("[seed] no reddit channels configured — skipping")
+        if not self._pairs:
+            self._log("[seed] no (channel, signal) pairs configured — skipping")
             return
 
-        pairs = [(ch, sig) for ch in reddit_channels for sig in signals.keys()]
-        self._log(
-            f"[seed] starting — {len(reddit_channels)} channels × "
-            f"{len(signals)} signals = {len(pairs)} (channel, signal) pairs"
-        )
+        pairs = list(self._pairs)
+        self._log(f"[seed] starting — {len(pairs)} (channel, signal) pairs")
 
         today = date.today()
         total_posts = 0
@@ -104,17 +117,8 @@ class Seeder:
             pair_failed = False
             found_count = 0
             for query, date_from, date_to in queries:
-                self._limiter.wait()
                 try:
-                    hits = self._brave.search(query, date_from, date_to)
-                except RetryableError as e:
-                    retry = e.retry_after or 60
-                    self._log(
-                        f"[seed] reddit:{ch} × {sig} — brave rate limited, "
-                        f"sleeping {retry:.0f}s"
-                    )
-                    time.sleep(retry)
-                    continue
+                    hits = self._search_window(ch, sig, query, date_from, date_to)
                 except PermanentError as e:
                     self._log(
                         f"[seed] reddit:{ch} × {sig} — brave error: {e} — "

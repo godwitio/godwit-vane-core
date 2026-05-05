@@ -69,6 +69,14 @@ class SQLiteStore(SeenStorePort, ClassificationStorePort,
         ).fetchall()
         return [(r[0] or "", r[1] or "", int(r[2])) for r in rows]
 
+    def record_retrain(self, signal_name: str, kind: str,
+                       sample_count: int) -> None:
+        self._conn.execute(
+            "INSERT INTO bayes_retrains "
+            "(signal_name, kind, sample_count, retrained_at) VALUES (?, ?, ?, ?)",
+            (signal_name, kind, sample_count, time.time()),
+        )
+
     def llm_label_counts(self) -> list[tuple[str, str, int, int, int]]:
         rows = self._conn.execute(
             """

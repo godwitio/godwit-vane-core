@@ -78,6 +78,17 @@ def _insert_classification(conn, *, content_id: int, signal: str,
     )
 
 
+def _insert_retrain(conn, *, signal: str = "s", kind: str = "post",
+                    sample_count: int = 20,
+                    retrained_at: float | None = None) -> None:
+    retrained_at = retrained_at if retrained_at is not None else time.time()
+    conn.execute(
+        "INSERT INTO bayes_retrains (signal_name, kind, sample_count, retrained_at) "
+        "VALUES (?, ?, ?, ?)",
+        (signal, kind, sample_count, retrained_at),
+    )
+
+
 def _insert_notification(conn, *, channel: str = "selfhosted",
                          payload: dict | None = None,
                          status: str = "done",
@@ -192,6 +203,12 @@ def test_today_counts(conn, metrics):
     assert t.llm_calls        == 1
     assert t.bayes_retrains   == 0
 
+    # A retrain that happened today increments the counter.
+    _insert_retrain(conn, retrained_at=today_morning)
+    _insert_retrain(conn, retrained_at=long_ago)   # yesterday — excluded
+    t2 = metrics.today()
+    assert t2.bayes_retrains == 1
+
 
 # ── 4. Signals — uses store.llm_label_counts() and 24h hits ────────────
 def test_signals_uses_label_counts(conn, tmp_path):
@@ -221,6 +238,36 @@ def test_signals_uses_label_counts(conn, tmp_path):
     assert rows["pain"].hits_24h    == 1
     assert rows["comparison"].pos_samples == 0
     assert rows["comparison"].hits_24h    == 0
+
+
+def test_signals_resolves_project_from_composite_id(conn, tmp_path):
+    """Project + human signal name come from the composite ID
+    (`<project>__<name>`) and the injected `_project` / `_name` keys
+    that `JsonSignalConfigAdapter.load()` writes into each signal dict.
+
+    A signal whose key has no `__` separator (e.g. an alternative adapter
+    that doesn't namespace) surfaces with `project=""` and the raw key
+    as the name — no crash, just unknown project."""
+
+    class _FakeProjectCfg:
+        def load(self) -> dict:
+            return {
+                "godwit__pain":  {"_project": "godwit",  "_name": "pain"},
+                "marcado__pain": {"_project": "marcado", "_name": "pain"},
+                "orphan":        {},   # no separator, no annotations
+            }
+
+    m = TuiMetrics(
+        db_conn               = conn,
+        store                 = _FakeStore([]),
+        signal_cfg            = _FakeProjectCfg(),
+        model_dir             = str(tmp_path),
+        scan_interval_minutes = 60,
+    )
+    rows = {(r.project, r.name): r for r in m.signals()}
+    assert ("godwit",  "pain") in rows
+    assert ("marcado", "pain") in rows
+    assert ("",        "orphan") in rows
 
 
 def test_signals_has_model_reads_filesystem(conn, tmp_path):
