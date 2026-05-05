@@ -3,19 +3,22 @@
 Only place with os.getenv(). Only place adapters are instantiated.
 No business logic — all of that lives in core/, filters/, services/, workers/.
 """
+import argparse
 import glob
 import json
 import os
+import queue as _queue
 import sys
 import threading
 import time
+import traceback
 
 import schedule
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from log import Logger
+from log import Logger, _stdout_sink, file_sink, queue_sink, render_log_path, rotating_file_sink
 
 from adapters.anthropic_labeller import AnthropicConfig, AnthropicLabeller
 from adapters.apprise_notifier import AppriseConfig, AppriseNotifier
@@ -24,6 +27,7 @@ from adapters.ollama import OllamaAdapter, OllamaConfig
 from adapters.pickle_store import PickleStoreAdapter
 from adapters.sqlite_content_store import SQLiteContentStore
 from adapters.sqlite_store import SQLiteStore
+from adapters.tui_metrics import note_tick as _note_tick
 
 from core.signal_router import SignalRouter
 from filters.bayes import ActiveLearner, BayesModel
@@ -50,15 +54,80 @@ from workers.sifter import Sifter
 load_dotenv()
 
 
-RESET_MODE     = "--reset"     in sys.argv[1:]
-SEED_ONLY_MODE = "--seed-only" in sys.argv[1:]
+# ── Log-file rotation config ───────────────────────────────────────────────────
+# `{date}` in the template is rendered as YYYY-MM-DD per the local clock; the
+# sink reopens the file at midnight and prunes older matches on each rollover.
+# A template without `{date}` disables rotation (back-compat, e.g. "log.txt").
+LOG_FILE_TEMPLATE  = os.getenv("LOG_FILE_TEMPLATE",  "log.{date}.txt")
+LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "5"))
 
-if RESET_MODE and SEED_ONLY_MODE:
-    print("error: --reset and --seed-only are mutually exclusive", file=sys.stderr)
-    sys.exit(2)
+
+# ── CLI flags ──────────────────────────────────────────────────────────────────
+ap = argparse.ArgumentParser(prog="godwit-vane")
+ap.add_argument("--verbose",   action="store_true",
+                help="disable TUI; write logs to stdout (and to --log-file unless --no-log)")
+ap.add_argument("--no-log",    action="store_true",
+                help="do not write a log file (TUI/stdout only)")
+ap.add_argument("--log-file",  default=LOG_FILE_TEMPLATE,
+                help=("log file path or template; `{date}` is replaced with "
+                      "YYYY-MM-DD and the sink rotates daily "
+                      "(default: log.{date}.txt; ignored with --no-log)"))
+ap.add_argument("--log-retention-days", type=int, default=LOG_RETENTION_DAYS,
+                help="number of dated log files to keep (default: 5)")
+ap.add_argument("--reset",     action="store_true")
+ap.add_argument("--seed-only", action="store_true")
+args = ap.parse_args()
+
+if args.reset and args.seed_only:
+    ap.error("--reset and --seed-only are mutually exclusive")
+
+RESET_MODE     = args.reset
+SEED_ONLY_MODE = args.seed_only
 
 
-LOG = Logger(debug_enabled=os.getenv("LOG_LEVEL", "info").lower() == "debug")
+def _tui_supported() -> bool:
+    if args.verbose:                                   return False
+    if not sys.stdout.isatty():                        return False
+    if os.environ.get("TERM", "").lower() == "dumb":   return False
+    return True
+
+
+TUI_ENABLED = _tui_supported()
+if not args.verbose and not TUI_ENABLED:
+    # Non-TTY / TERM=dumb fallback: behave as if --verbose was given.
+    args.verbose = True
+
+
+# ── Logger sinks ───────────────────────────────────────────────────────────────
+_log_sinks: list = []
+log_queue: _queue.Queue | None = (
+    _queue.Queue(maxsize=2000) if TUI_ENABLED else None
+)
+
+if args.verbose:
+    _log_sinks.append(_stdout_sink)
+if not args.no_log:
+    _log_sinks.append(rotating_file_sink(args.log_file, args.log_retention_days))
+if TUI_ENABLED and log_queue is not None:
+    _log_sinks.append(queue_sink(log_queue))
+
+LOG = Logger(
+    debug_enabled = os.getenv("LOG_LEVEL", "info").lower() == "debug",
+    sinks         = _log_sinks,
+)
+
+
+# Daemon threads that die from an uncaught exception take their work with them
+# silently — the pacer/scheduler is the canonical example. Route every uncaught
+# thread exception through the logger so the next failure leaves a trail.
+def _thread_excepthook(args: threading.ExceptHookArgs) -> None:
+    if args.exc_type is SystemExit:
+        return
+    name = args.thread.name if args.thread else "?"
+    tb = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+    LOG(f"[thread:{name}] uncaught {args.exc_type.__name__} — thread is dead\n{tb}")
+
+threading.excepthook = _thread_excepthook
 
 
 # ── settings.json ──────────────────────────────────────────────────────────────
@@ -146,7 +215,7 @@ def _build_labeller() -> LabellerPort:
 
 
 LABELLER    = _build_labeller()
-MODEL_STORE = PickleStoreAdapter(MODEL_DIR)
+MODEL_STORE = PickleStoreAdapter(MODEL_DIR, logger=LOG)
 SIGNAL_CFG  = JsonSignalConfigAdapter(os.path.join(_src_dir, "signals"))
 
 
@@ -302,14 +371,26 @@ SEEDER = _build_seeder()
 
 
 # ── Entry ──────────────────────────────────────────────────────────────────────
+def _pacer_tick() -> None:
+    PACER.tick()
+    _note_tick()
+
+
 def _periodic():
-    schedule.every(SCAN_INTERVAL_MINUTES).minutes.do(PACER.tick)
+    schedule.every(SCAN_INTERVAL_MINUTES).minutes.do(_pacer_tick)
     schedule.every().day.at(TREND_REPORT_TIME).do(TRENDS.report)
     schedule.every().day.at("03:00").do(HOUSE.run_daily)
     schedule.every(5).minutes.do(HOUSE.reap_stale)
     schedule.every().week.do(lambda: TRENDS.purge(keep_days=RETENTION_DAYS))
     while True:
-        schedule.run_pending()
+        try:
+            schedule.run_pending()
+        except Exception:
+            # A scheduled job raised. Don't let it kill the loop —
+            # the pacer (and everything downstream) depends on this thread
+            # surviving forever. Log with full traceback so the offending
+            # job is identifiable next time.
+            LOG(f"[periodic] scheduled job raised — continuing\n{traceback.format_exc()}")
         time.sleep(30)
 
 
@@ -321,25 +402,38 @@ def _run_reset() -> None:
     ]
     for t in threads: t.start()
 
-    stable = 0
-    while stable < 3:
-        time.sleep(2)
-        remaining = DB_CONN.execute(
-            "SELECT "
-            "  (SELECT COUNT(*) FROM content       WHERE status IN ('pending','running')), "
-            "  (SELECT COUNT(*) FROM notifications WHERE status IN ('pending','running'))"
-        ).fetchone()
-        content_left, notifs_left = remaining
-        if content_left == 0 and notifs_left == 0:
-            stable += 1
-        else:
-            stable = 0
-            LOG.debug(f"[reset] draining: content={content_left} notifications={notifs_left}")
+    done = threading.Event()
 
-    SIFTER.stop()
-    NOTIFIER_WORKER.stop()
-    _log_reset_summary()
-    LOG("[reset] done — queues drained.")
+    def _drain() -> None:
+        stable = 0
+        while stable < 3:
+            time.sleep(2)
+            content_left, notifs_left = DB_CONN.execute(
+                "SELECT "
+                "  (SELECT COUNT(*) FROM content       WHERE status IN ('pending','running')), "
+                "  (SELECT COUNT(*) FROM notifications WHERE status IN ('pending','running'))"
+            ).fetchone()
+            if content_left == 0 and notifs_left == 0:
+                stable += 1
+            else:
+                stable = 0
+                LOG.debug(f"[reset] draining: content={content_left} notifications={notifs_left}")
+
+        SIFTER.stop()
+        NOTIFIER_WORKER.stop()
+        _log_reset_summary()
+        LOG("[reset] done — queues drained.")
+        done.set()
+
+    def _shutdown() -> None:
+        SIFTER.stop()
+        NOTIFIER_WORKER.stop()
+
+    if TUI_ENABLED:
+        threading.Thread(target=_drain, name="reset-drain", daemon=True).start()
+        _start_tui(on_quit=_shutdown, exit_event=done)
+    else:
+        _drain()
 
 
 def _log_reset_summary() -> None:
@@ -383,34 +477,69 @@ def _run_seed_only() -> None:
     )
     seeder_thread.start()
 
-    prev_done = DB_CONN.execute(
-        "SELECT COUNT(*) FROM tasks WHERE status='done'"
-    ).fetchone()[0]
-    stable = 0
-    while stable < 3:
-        time.sleep(2)
-        tasks_left, content_left, notifs_left, done_now = DB_CONN.execute(
-            "SELECT "
-            "  (SELECT COUNT(*) FROM tasks         WHERE status IN ('pending','running')), "
-            "  (SELECT COUNT(*) FROM content       WHERE status IN ('pending','running')), "
-            "  (SELECT COUNT(*) FROM notifications WHERE status IN ('pending','running')), "
-            "  (SELECT COUNT(*) FROM tasks         WHERE status='done')"
-        ).fetchone()
-        delta = done_now - prev_done
-        prev_done = done_now
-        if (not seeder_thread.is_alive()
-                and tasks_left == 0 and content_left == 0 and notifs_left == 0):
-            stable += 1
-            continue
-        stable = 0
-        seeder_state = "seeding" if seeder_thread.is_alive() else "drain"
-        LOG.debug(f"[seed-only] {seeder_state}: tasks={tasks_left} (+{delta}/2s) "
-                  f"content={content_left} notifications={notifs_left}")
+    done = threading.Event()
 
+    def _drain() -> None:
+        prev_done = DB_CONN.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status='done'"
+        ).fetchone()[0]
+        stable = 0
+        while stable < 3:
+            time.sleep(2)
+            tasks_left, content_left, notifs_left, done_now = DB_CONN.execute(
+                "SELECT "
+                "  (SELECT COUNT(*) FROM tasks         WHERE status IN ('pending','running')), "
+                "  (SELECT COUNT(*) FROM content       WHERE status IN ('pending','running')), "
+                "  (SELECT COUNT(*) FROM notifications WHERE status IN ('pending','running')), "
+                "  (SELECT COUNT(*) FROM tasks         WHERE status='done')"
+            ).fetchone()
+            delta = done_now - prev_done
+            prev_done = done_now
+            if (not seeder_thread.is_alive()
+                    and tasks_left == 0 and content_left == 0 and notifs_left == 0):
+                stable += 1
+                continue
+            stable = 0
+            seeder_state = "seeding" if seeder_thread.is_alive() else "drain"
+            LOG.debug(f"[seed-only] {seeder_state}: tasks={tasks_left} (+{delta}/2s) "
+                      f"content={content_left} notifications={notifs_left}")
+
+        HARVESTER.stop()
+        SIFTER.stop()
+        NOTIFIER_WORKER.stop()
+        LOG("[seed-only] done — queues drained.")
+        done.set()
+
+    if TUI_ENABLED:
+        threading.Thread(target=_drain, name="seed-drain", daemon=True).start()
+        _start_tui(on_quit=_shutdown_workers, exit_event=done)
+    else:
+        _drain()
+
+
+def _shutdown_workers() -> None:
     HARVESTER.stop()
     SIFTER.stop()
     NOTIFIER_WORKER.stop()
-    LOG("[seed-only] done — queues drained.")
+
+
+def _start_tui(on_quit, exit_event: threading.Event | None = None) -> None:
+    from adapters.tui_textual import VaneTui
+    from adapters.tui_metrics  import TuiMetrics
+    metrics = TuiMetrics(
+        db_conn               = DB_CONN,
+        store                 = STORE,
+        signal_cfg            = SIGNAL_CFG,
+        model_dir             = MODEL_DIR,
+        scan_interval_minutes = SCAN_INTERVAL_MINUTES,
+    )
+    VaneTui(
+        metrics       = metrics,
+        log_queue     = log_queue,
+        on_quit       = on_quit,
+        exit_event    = exit_event,
+        log_file_path = None if args.no_log else render_log_path(args.log_file),
+    ).run()
 
 
 def main() -> None:
@@ -435,8 +564,15 @@ def main() -> None:
         threading.Thread(target=run_seeder_safely, args=(SEEDER, LOG),
                          name="seeder", daemon=True).start()
 
-    PACER.tick()
-    _periodic()
+    _pacer_tick()
+    periodic_thread = threading.Thread(target=_periodic, name="periodic", daemon=True)
+    periodic_thread.start()
+
+    if TUI_ENABLED:
+        _start_tui(on_quit=_shutdown_workers)
+    else:
+        # No TUI: block on the periodic loop forever, as today.
+        periodic_thread.join()
 
 
 if __name__ == "__main__":
