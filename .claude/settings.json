@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\serge\\\\Work\\\\Godwit\\\\vane\\\\gvc-wt\\\\trends\" -Force)",
+      "Bash(Select-Object Name, FullName)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\serge\\\\Work\\\\Godwit\\\\vane\\\\gvc-wt\\\\trends\\\\src\" -Recurse -File)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Skill(layer-imports)",
+      "Skill(layer-imports:*)",
+      "Bash(python -m pytest tests/services/test_trend_analyzer.py -v)"
+    ]
+  }
+}
