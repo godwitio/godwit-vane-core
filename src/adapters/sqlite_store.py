@@ -2,6 +2,14 @@ import sqlite3
 import time
 
 from core.models import RadarHit
+
+
+def _chan_filter(channels: frozenset[str] | None) -> tuple[str, list]:
+    """Return a SQL AND clause and its params for optional channel filtering."""
+    if not channels:
+        return "", []
+    placeholders = ",".join("?" * len(channels))
+    return f"AND channel IN ({placeholders})", list(channels)
 from ports.analytics_store import AnalyticsStorePort, TermTrend
 from ports.classification_store import ClassificationStorePort
 from ports.radar_store import RadarStorePort
@@ -107,17 +115,20 @@ class SQLiteStore(SeenStorePort, ClassificationStorePort,
         )
 
     # ── AnalyticsStorePort ───────────────────────────────────────────────
-    def record_terms(self, counts: dict[str, int]) -> None:
+    def record_terms(self, counts: dict[str, int], channel: str = "") -> None:
         day = time.strftime("%Y-%m-%d", time.gmtime())
         self._conn.executemany(
             """
-            INSERT INTO term_daily (term, day, count) VALUES (?, ?, ?)
-            ON CONFLICT(term, day) DO UPDATE SET count = count + excluded.count
+            INSERT INTO term_daily (term, day, channel, count) VALUES (?, ?, ?, ?)
+            ON CONFLICT(term, day, channel) DO UPDATE SET count = count + excluded.count
             """,
-            [(term, day, cnt) for term, cnt in counts.items()],
+            [(term, day, channel, cnt) for term, cnt in counts.items()],
         )
 
-    def get_trends(self, window_days: int, min_current: int) -> list[TermTrend]:
+    def get_trends(self, window_days: int, min_current: int,
+                   channels: frozenset[str] | None = None) -> list[TermTrend]:
+        chan_clause, params = _chan_filter(channels)
+        params.append(min_current)
         sql = f"""
             SELECT term,
                    SUM(CASE WHEN day >= date('now', '-{window_days} days')
@@ -127,33 +138,38 @@ class SQLiteStore(SeenStorePort, ClassificationStorePort,
                             THEN count ELSE 0 END) AS wp
               FROM term_daily
              WHERE day >= date('now', '-{2*window_days} days')
+                   {chan_clause}
              GROUP BY term
             HAVING wc >= ?
              ORDER BY CAST(wc AS REAL) / NULLIF(wp, 0) DESC NULLS LAST
              LIMIT 50
         """
-        rows = self._conn.execute(sql, (min_current,)).fetchall()
+        rows = self._conn.execute(sql, params).fetchall()
         out: list[TermTrend] = []
         for term, wc, wp in rows:
             ratio = (wc / wp) if wp else None
             out.append(TermTrend(term=term, current=wc, previous=wp or 0, ratio=ratio))
         return out
 
-    def get_new_terms(self, window_days: int) -> list[tuple[str, int]]:
+    def get_new_terms(self, window_days: int,
+                      channels: frozenset[str] | None = None) -> list[tuple[str, int]]:
+        chan_clause, chan_params = _chan_filter(channels)
         sql = f"""
             SELECT term, SUM(count) AS total
               FROM term_daily
              WHERE day >= date('now', '-{window_days} days')
+                   {chan_clause}
                AND term NOT IN (
                    SELECT DISTINCT term FROM term_daily
                     WHERE day <  date('now', '-{window_days} days')
+                          {chan_clause}
                )
              GROUP BY term
-             HAVING total >= 3
+            HAVING total >= 3
              ORDER BY total DESC
              LIMIT 20
         """
-        return list(self._conn.execute(sql).fetchall())
+        return list(self._conn.execute(sql, chan_params * 2).fetchall())
 
     def purge_old(self, keep_days: int) -> int:
         cur = self._conn.execute(
@@ -161,6 +177,17 @@ class SQLiteStore(SeenStorePort, ClassificationStorePort,
             (f"-{keep_days} days",),
         )
         return cur.rowcount
+
+    def load_stop_terms(self) -> set[str]:
+        rows = self._conn.execute("SELECT term FROM trend_stop_terms").fetchall()
+        return {r[0] for r in rows}
+
+    def add_stop_term(self, term: str) -> None:
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        self._conn.execute(
+            "INSERT OR IGNORE INTO trend_stop_terms (term, added_at) VALUES (?, ?)",
+            (term, day),
+        )
 
     # ── SeedingStatePort ─────────────────────────────────────────────────
     def is_seeded(self, channel: str, signal: str) -> bool:

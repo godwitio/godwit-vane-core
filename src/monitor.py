@@ -367,10 +367,20 @@ def _build_apprise_notifier_for_destination(urls: list[str], title: str) -> Appr
 
 # Trend reports follow the signal route: trends are an aggregate over post
 # traffic, not a brand-mention stream.
+_project_channels: dict[str, frozenset[str]] = {
+    proj_name: frozenset(
+        ch
+        for entry in proj.settings.get("channels", {}).values()
+        for ch in entry.get("market", [])
+    )
+    for proj_name, proj in _PROJECTS.items()
+}
 TRENDS = TrendAnalyzer(
     store=STORE,
     notifier=_build_apprise_notifier_for_destination(_SIGNAL_URLS, "Godwit Vane"),
     logger=LOG,
+    labeller=LABELLER,
+    project_channels=_project_channels or None,
 )
 
 HARVESTER = Harvester(
