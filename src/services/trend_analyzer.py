@@ -49,12 +49,14 @@ _MIN_ALPHA = 2  # token must contain at least this many letter characters
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9._-]+")
 
 _TREND_FILTER_PROMPT = (
-    "Is the following a specific, meaningful topic from a tech community?\n"
-    "Reply YES for: technical terms, product names, tools, frameworks, APIs, "
-    "protocols, or proper nouns.\n"
-    "Reply NO for: common English words, pronouns, prepositions, generic verbs, "
-    "numbers, or punctuation patterns.\n"
-    "Term: {term}"
+    "Classify the term below. Reply YES or NO.\n"
+    "YES: specific product names, model numbers, protocols, tools, frameworks, "
+    "version strings, or named technologies "
+    "(e.g. proxmox, 10gbe, zfs, jellyfin, unraid, pcie, nvme, smb, nfs).\n"
+    "NO: generic category words that appear in nearly every post in a homelab or "
+    "storage community (e.g. server, drive, nas, storage, network, disk, data, "
+    "setup, system, config), or common English words, pronouns, prepositions.\n"
+    "<title>{term}</title>"
 )
 
 
@@ -111,45 +113,44 @@ class TrendAnalyzer:
         self._store.record_terms(dict(counts), channel=channel, day=day)
 
     def _report_section(self, lines: list[str], channels: frozenset[str] | None) -> None:
-        trends_7  = self._store.get_trends(7,  5,  channels)
-        trends_30 = self._store.get_trends(30, 10, channels)
-        new_terms = self._store.get_new_terms(7, channels)
+        self._append_window(lines, "7-day window (vs prev 7 days)",
+                            window_days=7,  min_current=5,
+                            channels=channels, allow_new=True)
+        self._append_window(lines, "30-day window (vs prev 30 days)",
+                            window_days=30, min_current=10,
+                            channels=channels, allow_new=False)
+        self._append_new_terms(lines, channels)
 
-        if trends_7:
-            lines.append("")
-            lines.append("**7-day window (vs prev 7 days):**")
-            shown = 0
-            for t in trends_7:
-                if not self._is_interesting(t.term): continue
-                if t.ratio is None:
-                    lines.append(f"  `{t.term}` NEW ({t.current})")
-                else:
-                    arrow = "↑" if t.ratio >= 1 else "↓"
-                    lines.append(f"  `{t.term}` {arrow}{t.ratio:.1f}x ({t.previous} → {t.current})")
-                shown += 1
-                if shown >= 10: break
-
-        if trends_30:
-            lines.append("")
-            lines.append("**30-day window (vs prev 30 days):**")
-            shown = 0
-            for t in trends_30:
-                if t.ratio is None: continue
-                if not self._is_interesting(t.term): continue
+    def _append_window(self, lines: list[str], header: str,
+                       window_days: int, min_current: int,
+                       channels: frozenset[str] | None,
+                       allow_new: bool) -> None:
+        entries: list[str] = []
+        for t in self._store.get_trends(window_days, min_current, channels):
+            if t.ratio is None and not allow_new: continue
+            if not self._is_interesting(t.term): continue
+            if t.ratio is None:
+                entries.append(f"  `{t.term}` NEW ({t.current})")
+            else:
                 arrow = "↑" if t.ratio >= 1 else "↓"
-                lines.append(f"  `{t.term}` {arrow}{t.ratio:.1f}x ({t.previous} → {t.current})")
-                shown += 1
-                if shown >= 10: break
+                entries.append(f"  `{t.term}` {arrow}{t.ratio:.1f}x ({t.previous} → {t.current})")
+            if len(entries) >= 10: break
+        if entries:
+            lines.append("")
+            lines.append(f"**{header}:**")
+            lines.extend(entries)
 
-        if new_terms:
+    def _append_new_terms(self, lines: list[str],
+                          channels: frozenset[str] | None) -> None:
+        entries: list[str] = []
+        for term, count in self._store.get_new_terms(7, channels):
+            if not self._is_interesting(term): continue
+            entries.append(f"  `{term}` — {count} mentions")
+            if len(entries) >= 10: break
+        if entries:
             lines.append("")
             lines.append("🆕 **New terms (first seen this week):**")
-            shown = 0
-            for term, count in new_terms:
-                if not self._is_interesting(term): continue
-                lines.append(f"  `{term}` — {count} mentions")
-                shown += 1
-                if shown >= 10: break
+            lines.extend(entries)
 
     def report(self) -> None:
         lines = [f"📈 **Trend Report** — {time.strftime('%Y-%m-%d', time.gmtime())}"]

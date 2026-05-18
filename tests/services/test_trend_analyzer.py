@@ -203,6 +203,37 @@ def test_report_30day_ratio_none_term_never_shown():
     assert "rust" not in notifier.sent[0]
 
 
+def test_report_30day_only_ratio_none_no_section_header():
+    # When every 30-day candidate is ratio=None (cold start), the section must
+    # not emit an empty "**30-day window...**" header with no body underneath.
+    ta, notifier = _analyzer(
+        trends_30=[TermTrend(term="rust", current=50, previous=0, ratio=None)],
+    )
+    ta.report()
+    assert "30-day window" not in notifier.sent[0]
+
+
+def test_report_7day_all_terms_rejected_no_section_header():
+    # If every candidate is filtered by the labeller, hide the section header.
+    ta, notifier = _analyzer(
+        labeller=ScriptedLabeller([False]),
+        trends_7=[TermTrend(term="they", current=100, previous=50, ratio=2.0)],
+    )
+    ta.report()
+    assert "7-day window" not in notifier.sent[0]
+
+
+def test_report_7day_new_term_still_shown():
+    # A NEW item (ratio=None) in the 7-day section is meaningful when the
+    # store has decided there is a real prev window. Keep showing it.
+    ta, notifier = _analyzer(
+        trends_7=[TermTrend(term="zfs", current=20, previous=0, ratio=None)],
+    )
+    ta.report()
+    assert "zfs" in notifier.sent[0]
+    assert "NEW" in notifier.sent[0]
+
+
 def test_report_new_terms_section_llm_rejects_first_accepts_second():
     ta, notifier = _analyzer(
         labeller=ScriptedLabeller([False, True]),
