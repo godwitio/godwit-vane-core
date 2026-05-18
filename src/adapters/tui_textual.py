@@ -1,12 +1,16 @@
 """Textual TUI for `monitor.py`.
 
-Single-screen dashboard with six summary widgets + a live log tail. Each
-widget consumes a frozen dataclass produced by `TuiMetrics`; widgets do
-not run SQL and do not import workers / filters / core. Dashboard widget
-focus + number keys drill into per-widget detail screens; Esc returns
-to the dashboard.
+Adaptive single-screen dashboard: six summary cards in a 2-column grid
+on wide terminals, a single-column stack on medium, and one-line
+summaries on compact. The active layout is chosen by
+`tui_layout.get_layout()` from the current terminal size. Widgets
+consume frozen dataclasses produced by `TuiMetrics`; widgets do not run
+SQL and do not import workers / filters / core. Dashboard widget focus
++ number keys drill into per-widget detail screens; Esc returns to the
+dashboard.
 
-Imports allowed: `textual`, stdlib, `adapters.tui_metrics`.
+Imports allowed: `textual`, stdlib, `adapters.tui_metrics`,
+`adapters.tui_layout`.
 """
 from __future__ import annotations
 
@@ -18,7 +22,6 @@ from typing import Callable
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
-from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import (
     DataTable,
@@ -28,6 +31,7 @@ from textual.widgets import (
     Static,
 )
 
+from adapters.tui_layout import LayoutMode, get_layout
 from adapters.tui_metrics import (
     AdapterHealth,
     CascadeCounts,
@@ -53,43 +57,92 @@ _DRILL_FOR_ID: dict[str, str] = {
 }
 
 
+# ── small formatting helpers ──────────────────────────────────────────────
+def _trunc(s: str, n: int) -> str:
+    """Truncate `s` to at most `n` glyphs, marking truncation with `…`."""
+    if n <= 0:
+        return ""
+    if len(s) <= n:
+        return s
+    if n == 1:
+        return "…"
+    return s[: n - 1] + "…"
+
+
+def _fmt_short_duration(seconds: int) -> str:
+    """Render a seconds count as `12s` / `7m` / `2h`. Negative -> `—`."""
+    if seconds < 0:
+        return "—"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    return f"{hours}h"
+
+
+def _pacer_label(state: str) -> str:
+    return {"running": "scanning", "scheduled": "waiting"}.get(state, "idle")
+
+
 # ── Dashboard widgets ─────────────────────────────────────────────────────
 class _Card(Static):
-    """Static + can_focus so Tab cycles between dashboard widgets."""
+    """Static + can_focus so Tab cycles between dashboard widgets.
+
+    Each card carries a `compact` flag set by the app whenever the
+    layout mode changes; `update()` reads the flag and renders either a
+    full body or a one-line summary.
+    """
     can_focus = True
+    compact: bool = False
 
 
 class PipelineWidget(_Card):
     """Pacer → Harvester → Sifter → Notifier with queue depths."""
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.border_title = "Pipeline"
+
     def update(self, c: PipelineCounts) -> None:  # type: ignore[override]
-        if c.pacer_state == "running":
-            pacer_label = "scanning"
-            last_line = f"scanning — queuing {c.last_scheduled} discover tasks"
-        elif c.pacer_state == "scheduled":
-            next_min = c.next_scan_seconds // 60
-            next_sec = c.next_scan_seconds % 60
-            pacer_label = "waiting"
-            ago_m = c.last_scan_seconds_ago // 60
-            ago_s = c.last_scan_seconds_ago % 60
-            last_line = (
-                f"last scan {ago_m}m{ago_s:02d}s ago ({c.last_scheduled} enqueued)"
-                f"  |  next in {next_min}m{next_sec:02d}s"
+        state    = _pacer_label(c.pacer_state)
+        total_q  = c.harv_pending + c.sift_pending + c.noti_pending
+        last_str = _fmt_short_duration(c.last_scan_seconds_ago)
+        next_str = (
+            _fmt_short_duration(c.next_scan_seconds)
+            if c.pacer_state == "scheduled" else "—"
+        )
+
+        if self.compact:
+            super().update(
+                f"Pipeline  {state}  |  q={total_q}  |  "
+                f"last {last_str}  |  next {next_str}"
             )
-        else:
-            pacer_label = "idle"
-            last_line = "no scan yet"
+            return
+
         body = (
-            f"Pacer  >  Harvester  >  Sifter   >  Notifier\n"
-            f"{pacer_label:<10} q={c.harv_pending:<6} q={c.sift_pending:<5} q={c.noti_pending}\n"
-            f"5m: harvest={c.last_5m_harvest}  sift={c.last_5m_sift}  notified={c.last_5m_notified}\n"
-            f"{last_line}"
+            f"Pacer  >  Harvester  >  Sifter  >  Notifier\n"
+            f"{state}   q={total_q}   |   last {last_str}   |   next {next_str}\n"
+            f"5m   harv={c.last_5m_harvest}   sift={c.last_5m_sift}   "
+            f"noti={c.last_5m_notified}"
         )
         super().update(body)
 
 
 class CascadeWidget(_Card):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.border_title = "Funnel"
+
     def update(self, c: CascadeCounts) -> None:  # type: ignore[override]
+        if self.compact:
+            super().update(
+                f"Funnel  prefilter {c.prefilter_in}→{c.prefilter_kept}  |  "
+                f"bayes {c.bayes_in}→{c.bayes_kept}  |  "
+                f"llm {c.llm_in}→{c.llm_kept}"
+            )
+            return
         body = (
             f"prefilter  {c.prefilter_in:>6} -> {c.prefilter_kept:<6} "
             f"({c.prefilter_in - c.prefilter_kept} dropped)\n"
@@ -102,52 +155,104 @@ class CascadeWidget(_Card):
 
 
 class SignalsWidget(_Card):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.border_title = "Signals"
+
     def update(self, rows: list[SignalRow]) -> None:  # type: ignore[override]
+        if self.compact:
+            trained = sum(1 for r in rows if r.has_model)
+            super().update(f"Signals  {len(rows)} loaded  |  {trained} trained")
+            return
+
         if not rows:
             super().update("(no signals loaded)")
             return
+
+        # The right column on wide layouts is ~30-35% wide, so signal
+        # names compete for space with the counts. Truncate aggressively
+        # rather than letting names overflow into the next column.
         lines = []
-        for r in rows[:8]:
-            model = "trained" if r.has_model else "none"
-            project = (r.project[:10] if r.project else "-")
+        for r in rows:
+            model    = "trained" if r.has_model else "none"
+            project  = _trunc(r.project or "-", 10)
+            name     = _trunc(r.name, 22)
             lines.append(
-                f"  {project:<10} {r.name:<22} {r.hits_24h:>4}  "
+                f"  {project:<10} {name:<22} {r.hits_24h:>4}  "
                 f"{r.pos_samples}/{r.neg_samples:<6}  {model}"
             )
         super().update("\n".join(lines))
 
 
 class TodayWidget(_Card):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.border_title = "Summary"
+
     def update(self, t: TodayCounts) -> None:  # type: ignore[override]
+        if self.compact:
+            super().update(
+                f"Stats  items {t.items_seen}  |  matches {t.matches_notified}  |  "
+                f"llm {t.llm_calls}  |  retrains {t.bayes_retrains}"
+            )
+            return
         body = (
             f"items     {t.items_seen:>6}\n"
-            f"match     {t.matches_notified:>6}   llm  {t.llm_calls}\n"
+            f"matches   {t.matches_notified:>6}   llm  {t.llm_calls}\n"
             f"retrains  {t.bayes_retrains:>6}"
         )
         super().update(body)
 
 
 class AdaptersWidget(_Card):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.border_title = "Runtime health"
+
     def update(self, rows: list[AdapterHealth]) -> None:  # type: ignore[override]
+        if self.compact:
+            if not rows:
+                super().update("Health  (no adapters)")
+                return
+            short = {"up": "ok", "down": "down", "degraded": "deg", "unknown": "?"}
+            parts = [f"{r.name} {short.get(r.state, '?')}" for r in rows]
+            super().update("Health  " + "  |  ".join(parts))
+            return
+
         if not rows:
             super().update("(no adapters)")
             return
         lines = []
         for r in rows:
-            mark = {"up": "*", "down": "x", "degraded": "!", "unknown": "?"}.get(r.state, "?")
-            lines.append(f"  {r.name:<12} {mark} {r.detail}")
+            mark   = {"up": "*", "down": "x", "degraded": "!", "unknown": "?"}.get(r.state, "?")
+            detail = _trunc(r.detail, 40)
+            lines.append(f"  {r.name:<10} {mark} {detail}")
         super().update("\n".join(lines))
 
 
 class MatchesWidget(_Card):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.border_title = "Recent"
+
     def update(self, rows: list[MatchRow]) -> None:  # type: ignore[override]
+        if self.compact:
+            if not rows:
+                super().update("Recent  (no matches yet)")
+                return
+            head = rows[0]
+            super().update(
+                f"Recent  {len(rows)} shown  |  last {head.when} {head.signal}"
+            )
+            return
+
         if not rows:
             super().update("(no matches yet)")
             return
         lines = []
-        for r in rows[:8]:
-            channel = (r.channel[:14] + "..") if len(r.channel) > 14 else r.channel
-            sig = (r.signal[:8])
+        for r in rows:
+            channel = _trunc(r.channel, 16)
+            sig     = _trunc(r.signal, 8)
             lines.append(
                 f"  {r.when}  {sig:<8} {channel:<16} {int(r.confidence * 100)}%"
             )
@@ -174,19 +279,21 @@ class LogTailWidget(RichLog):
 
 # ── Dashboard ─────────────────────────────────────────────────────────────
 class DashboardScreen(Screen):
-    """The default screen: six summary widgets + log tail at bottom."""
+    """The default screen.
+
+    Layout is driven by CSS classes on the screen — `wide`, `medium`,
+    `compact` — toggled by `VaneTui.watch_layout_mode`. The CSS keeps
+    all layout math in one place; widgets don't know their own size.
+
+    Wide layout (default):
+        Row 1: Pipeline | Runtime health (Adapters)
+        Row 2: Funnel (Cascade) | Summary (Today)
+        Row 3: Signals | Recent (Matches)     ← grows vertically
+        Row 4: Logs spanning full width
+    """
 
     DEFAULT_CSS = """
-    DashboardScreen {
-        layout: grid;
-        grid-size: 2 4;
-        grid-columns: 2fr 1fr;
-        grid-rows: 7 9 1fr 8;
-        grid-gutter: 0 1;
-    }
-    DashboardScreen.compact {
-        layout: vertical;
-    }
+    /* ── shared card style ── */
     PipelineWidget, CascadeWidget, SignalsWidget,
     TodayWidget, AdaptersWidget, MatchesWidget {
         border: round $primary 50%;
@@ -197,8 +304,59 @@ class DashboardScreen(Screen):
         border: round $accent;
     }
     LogTailWidget {
-        column-span: 2;
         border: round $accent 50%;
+    }
+
+    /* ── wide = unstyled default. No class required, so the dashboard
+           renders correctly on first paint before resize fires. ── */
+    DashboardScreen {
+        layout: grid;
+        grid-size: 2 4;
+        grid-columns: 2fr 1fr;
+        grid-rows: 7 5 1fr 12;
+        grid-gutter: 0 1;
+    }
+    DashboardScreen PipelineWidget,
+    DashboardScreen CascadeWidget,
+    DashboardScreen SignalsWidget,
+    DashboardScreen TodayWidget,
+    DashboardScreen AdaptersWidget,
+    DashboardScreen MatchesWidget {
+        height: 100%;
+        width: 100%;
+    }
+    DashboardScreen LogTailWidget {
+        column-span: 2;
+        height: 100%;
+        width: 100%;
+    }
+
+    /* ── medium: single-column stack, full-fidelity widgets ── */
+    DashboardScreen.medium {
+        layout: vertical;
+    }
+    DashboardScreen.medium PipelineWidget,
+    DashboardScreen.medium CascadeWidget,
+    DashboardScreen.medium TodayWidget,
+    DashboardScreen.medium AdaptersWidget {
+        width: 100%;
+        height: auto;
+    }
+    DashboardScreen.medium SignalsWidget,
+    DashboardScreen.medium MatchesWidget {
+        width: 100%;
+        height: auto;
+        min-height: 6;
+    }
+    DashboardScreen.medium LogTailWidget {
+        width: 100%;
+        height: 1fr;
+        min-height: 6;
+    }
+
+    /* ── compact: one-line summaries, log fills the rest ── */
+    DashboardScreen.compact {
+        layout: vertical;
     }
     DashboardScreen.compact PipelineWidget,
     DashboardScreen.compact CascadeWidget,
@@ -206,26 +364,28 @@ class DashboardScreen(Screen):
     DashboardScreen.compact TodayWidget,
     DashboardScreen.compact AdaptersWidget,
     DashboardScreen.compact MatchesWidget {
-        height: auto;
         width: 100%;
+        height: 3;
     }
     DashboardScreen.compact LogTailWidget {
-        column-span: 1;
         width: 100%;
-        height: 10;
-        dock: bottom;
+        height: 1fr;
+        min-height: 4;
     }
     """
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield PipelineWidget(id="pipeline")
-        yield TodayWidget(id="today")
-        yield CascadeWidget(id="cascade")
-        yield AdaptersWidget(id="adapters")
-        yield SignalsWidget(id="signals")
-        yield MatchesWidget(id="matches")
-        yield LogTailWidget(id="logtail")
+        # Compose order matches the wide-grid placement; for medium and
+        # compact (which use vertical layout) the same order produces
+        # the desired top-to-bottom stack.
+        yield PipelineWidget(id="pipeline")      # row 1 col 1
+        yield AdaptersWidget(id="adapters")      # row 1 col 2
+        yield CascadeWidget(id="cascade")        # row 2 col 1
+        yield TodayWidget(id="today")            # row 2 col 2
+        yield SignalsWidget(id="signals")        # row 3 col 1 — grows
+        yield MatchesWidget(id="matches")        # row 3 col 2 — grows
+        yield LogTailWidget(id="logtail")        # row 4 full width
         yield Footer()
 
     def on_mount(self) -> None:
@@ -305,7 +465,7 @@ class CascadeScreen(_TableDetailScreen):
         self._table.clear()
         for r in metrics.cascade_rows(limit=200):
             label_text = "YES" if r.label == 1 else "no"
-            title = (r.title[:60] + "...") if len(r.title) > 60 else r.title
+            title = _trunc(r.title, 63)
             self._table.add_row(
                 r.when,
                 str(r.content_id),
@@ -367,7 +527,7 @@ class MatchesScreen(_TableDetailScreen):
         for r in metrics.matches(limit=200):
             if r.confidence <= 0.0:
                 continue
-            title = (r.title[:60] + "...") if len(r.title) > 60 else r.title
+            title = _trunc(r.title, 63)
             self._table.add_row(
                 r.when,
                 r.signal,
@@ -437,6 +597,9 @@ class HelpScreen(Screen):
 
 
 # ── App ───────────────────────────────────────────────────────────────────
+_CARD_IDS = ("pipeline", "adapters", "cascade", "today", "signals", "matches")
+
+
 class VaneTui(App):
     """Default TUI surface for `monitor.py`."""
 
@@ -470,8 +633,6 @@ class VaneTui(App):
         "log":      LogScreen,
     }
 
-    layout_mode: reactive[str] = reactive("wide")
-
     def __init__(
         self,
         *,
@@ -488,6 +649,7 @@ class VaneTui(App):
         self.exit_event    = exit_event
         self.log_file_path = log_file_path
         self._dashboard    = DashboardScreen()
+        self.layout_mode: LayoutMode = "wide"
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def on_mount(self) -> None:
@@ -496,17 +658,44 @@ class VaneTui(App):
         self.set_interval(0.1, self._drain_log_queue)
         if self.exit_event is not None:
             self.set_interval(0.5, self._check_exit_event)
+        # Apply the initial layout once the dashboard is mounted, so the
+        # first paint already has the correct mode — don't wait for the
+        # first on_resize to fire.
+        self.call_after_refresh(self._init_layout)
+
+    def _init_layout(self) -> None:
+        size = self.size
+        self._apply_layout(get_layout(size.width, size.height))
 
     def on_resize(self, event) -> None:  # type: ignore[override]
-        cols, rows = event.size.width, event.size.height
-        if   cols >= 120 and rows >= 30: self.layout_mode = "wide"
-        elif cols >= 80  and rows >= 24: self.layout_mode = "mid"
-        else:                            self.layout_mode = "narrow"
+        self._apply_layout(get_layout(event.size.width, event.size.height))
 
-    def watch_layout_mode(self, value: str) -> None:
+    def _apply_layout(self, mode: LayoutMode) -> None:
+        """Set the dashboard's layout class and per-widget compact flag.
+
+        Applied directly rather than through a reactive so that setting
+        the same value twice (e.g. on a resize that didn't cross a
+        breakpoint) still applies the class — important on first paint,
+        where the default attribute already says "wide" and a reactive
+        watcher wouldn't fire.
+        """
+        self.layout_mode = mode
+        dash = self._dashboard
         try:
-            if self._dashboard.is_mounted:
-                self._dashboard.set_class(value != "wide", "compact")
+            if not dash.is_mounted:
+                return
+            # wide is the unstyled default; only medium/compact carry classes.
+            dash.set_class(mode == "medium",  "medium")
+            dash.set_class(mode == "compact", "compact")
+            compact = (mode == "compact")
+            for card_id in _CARD_IDS:
+                try:
+                    dash.query_one(f"#{card_id}", _Card).compact = compact
+                except Exception:
+                    pass
+            # Render once immediately so a layout change doesn't have to
+            # wait up to a second for the next metrics tick.
+            self._tick_metrics()
         except Exception:
             pass
 
