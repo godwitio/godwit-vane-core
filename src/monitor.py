@@ -80,16 +80,23 @@ ap.add_argument("--reset",     action="store_true")
 ap.add_argument("--seed-only", action="store_true")
 ap.add_argument("--project",
                 help="limit --seed-only to one project directory under src/signals/")
+ap.add_argument("--backfill-trends", action="store_true",
+                help="wipe term_daily and re-derive it from the content table "
+                     "(dates each row by created_at, falling back to fetched_at). "
+                     "One-shot bootstrap for deployments where trend recording "
+                     "was wired up after content already existed.")
 args = ap.parse_args()
 
-if args.reset and args.seed_only:
-    ap.error("--reset and --seed-only are mutually exclusive")
+_modes = sum(bool(x) for x in (args.reset, args.seed_only, args.backfill_trends))
+if _modes > 1:
+    ap.error("--reset, --seed-only, and --backfill-trends are mutually exclusive")
 if args.project and not args.seed_only:
     ap.error("--project requires --seed-only")
 
-RESET_MODE     = args.reset
-SEED_ONLY_MODE = args.seed_only
-SELECTED_PROJECT = (args.project or "").strip() or None
+RESET_MODE        = args.reset
+SEED_ONLY_MODE    = args.seed_only
+BACKFILL_TRENDS   = args.backfill_trends
+SELECTED_PROJECT  = (args.project or "").strip() or None
 
 
 def _tui_supported() -> bool:
@@ -305,6 +312,55 @@ def _reset_state() -> None:
 
 if RESET_MODE:
     _reset_state()
+
+
+# ── Backfill-trends mode ───────────────────────────────────────────────────────
+# One-shot: re-derive term_daily from the content table. Each content row is
+# tokenized exactly as the live sifter would tokenize it (same _tokenize, same
+# bigram pairing) and dated by its post-creation time, so the resulting trend
+# windows reflect *when content was authored*, not when we backfilled.
+def _backfill_trends() -> None:
+    from collections import Counter
+    from services.trend_analyzer import _tokenize
+
+    LOG("[backfill] reading content rows...")
+    rows = DB_CONN.execute(
+        "SELECT title, body, channel, "
+        "       COALESCE(NULLIF(created_at, 0), fetched_at) AS ts "
+        "  FROM content"
+    ).fetchall()
+    LOG(f"[backfill] tokenizing {len(rows)} rows")
+
+    by_day_chan: dict[tuple[str, str], Counter] = {}
+    for title, body, channel, ts in rows:
+        text = (title or "") + " " + (body or "")
+        if not text.strip(): continue
+        tokens = _tokenize(text)
+        if not tokens: continue
+        day = time.strftime("%Y-%m-%d", time.gmtime(ts))
+        bucket = by_day_chan.setdefault((channel, day), Counter())
+        for tok in tokens:
+            bucket[tok] += 1
+        for a, b in zip(tokens, tokens[1:]):
+            bucket[f"{a} {b}"] += 1
+
+    LOG(f"[backfill] aggregated into {len(by_day_chan)} (channel, day) buckets")
+    LOG("[backfill] wiping term_daily and bulk-inserting...")
+    DB_CONN.execute("BEGIN")
+    try:
+        DB_CONN.execute("DELETE FROM term_daily")
+        for (channel, day), counts in by_day_chan.items():
+            STORE.record_terms(dict(counts), channel=channel, day=day)
+        DB_CONN.execute("COMMIT")
+    except Exception:
+        DB_CONN.execute("ROLLBACK")
+        raise
+    LOG("[backfill] done")
+
+
+if BACKFILL_TRENDS:
+    _backfill_trends()
+    sys.exit(0)
 
 
 # ── Pre-filter config ──────────────────────────────────────────────────────────

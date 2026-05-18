@@ -13,7 +13,10 @@ class TermTrend:
 class AnalyticsStorePort(ABC):
 
     @abstractmethod
-    def record_terms(self, counts: dict[str, int], channel: str = "") -> None: ...
+    def record_terms(self, counts: dict[str, int], channel: str = "",
+                     day: str | None = None) -> None:
+        """Add term counts. `day` is YYYY-MM-DD UTC; None means today."""
+        ...
 
     @abstractmethod
     def get_trends(self, window_days: int, min_current: int,

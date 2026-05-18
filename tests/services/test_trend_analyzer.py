@@ -27,12 +27,14 @@ class FakeStore(AnalyticsStorePort):
         self._stop_terms: set[str] = set(stop_terms or [])
         self.recorded:         list[dict] = []
         self.recorded_channels: list[str] = []
+        self.recorded_days:    list[str | None] = []
         self.trend_calls:      list[tuple] = []  # (window_days, min_current, channels)
         self.added_stops:      list[str]   = []
 
-    def record_terms(self, counts, channel=""):
+    def record_terms(self, counts, channel="", day=None):
         self.recorded.append(dict(counts))
         self.recorded_channels.append(channel)
+        self.recorded_days.append(day)
 
     def get_trends(self, window_days, min_current, channels=None):
         self.trend_calls.append((window_days, min_current, channels))
@@ -117,6 +119,23 @@ def test_record_post_passes_channel_to_store():
     post = Post(id="p1", source="reddit", channel="localllama", title="llm rocks", body="")
     ta.record_post(post)
     assert store.recorded_channels == ["localllama"]
+
+
+def test_record_post_default_day_is_none_meaning_today():
+    # Live recording leaves day=None so the adapter stamps today.
+    store = FakeStore()
+    ta = TrendAnalyzer(store=store, notifier=FakeNotifier(), logger=_SilentLogger())
+    ta.record_post(Post(id="p1", source="reddit", channel="ch", title="rust"))
+    assert store.recorded_days == [None]
+
+
+def test_record_post_with_explicit_day_threads_through_to_store():
+    # Backfill path supplies the day from the content row's created_at.
+    store = FakeStore()
+    ta = TrendAnalyzer(store=store, notifier=FakeNotifier(), logger=_SilentLogger())
+    ta.record_post(Post(id="p1", source="reddit", channel="ch", title="rust"),
+                   day="2025-08-01")
+    assert store.recorded_days == ["2025-08-01"]
 
 
 # ── 2. _is_interesting: labeller delegation ───────────────────────────────────

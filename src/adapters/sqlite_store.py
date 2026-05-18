@@ -115,8 +115,10 @@ class SQLiteStore(SeenStorePort, ClassificationStorePort,
         )
 
     # ── AnalyticsStorePort ───────────────────────────────────────────────
-    def record_terms(self, counts: dict[str, int], channel: str = "") -> None:
-        day = time.strftime("%Y-%m-%d", time.gmtime())
+    def record_terms(self, counts: dict[str, int], channel: str = "",
+                     day: str | None = None) -> None:
+        if day is None:
+            day = time.strftime("%Y-%m-%d", time.gmtime())
         self._conn.executemany(
             """
             INSERT INTO term_daily (term, day, channel, count) VALUES (?, ?, ?, ?)
@@ -127,8 +129,21 @@ class SQLiteStore(SeenStorePort, ClassificationStorePort,
 
     def get_trends(self, window_days: int, min_current: int,
                    channels: frozenset[str] | None = None) -> list[TermTrend]:
-        chan_clause, params = _chan_filter(channels)
-        params.append(min_current)
+        chan_clause, chan_params = _chan_filter(channels)
+        # Cold start: no data in the prev window means every term looks NEW
+        # (wp=0). Mirror the protection in get_new_terms — return nothing
+        # rather than emit a wall of misleading "NEW (n)" rows.
+        has_prev = self._conn.execute(
+            f"""SELECT 1 FROM term_daily
+                 WHERE day >= date('now', '-{2*window_days} days')
+                   AND day <  date('now', '-{window_days} days')
+                       {chan_clause}
+                 LIMIT 1""",
+            chan_params,
+        ).fetchone()
+        if not has_prev:
+            return []
+        params = chan_params + [min_current]
         sql = f"""
             SELECT term,
                    SUM(CASE WHEN day >= date('now', '-{window_days} days')
@@ -154,6 +169,19 @@ class SQLiteStore(SeenStorePort, ClassificationStorePort,
     def get_new_terms(self, window_days: int,
                       channels: frozenset[str] | None = None) -> list[tuple[str, int]]:
         chan_clause, chan_params = _chan_filter(channels)
+        # If there is no data older than window_days for these channels,
+        # every term looks "new" — that is a cold-start artifact, not a
+        # signal. Scope the check per-channel so a fresh project gets the
+        # same protection as a fresh system.
+        has_prior = self._conn.execute(
+            f"""SELECT 1 FROM term_daily
+                 WHERE day < date('now', '-{window_days} days')
+                       {chan_clause}
+                 LIMIT 1""",
+            chan_params,
+        ).fetchone()
+        if not has_prior:
+            return []
         sql = f"""
             SELECT term, SUM(count) AS total
               FROM term_daily

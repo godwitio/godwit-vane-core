@@ -96,17 +96,19 @@ class TrendAnalyzer:
             self._store.add_stop_term(term)
         return result is True  # abstain (None) → NO, conservative
 
-    def record_post(self, post: Post) -> None:
-        self.record_text(post.title + " " + post.body, channel=post.channel)
+    def record_post(self, post: Post, day: str | None = None) -> None:
+        self.record_text(post.title + " " + post.body,
+                         channel=post.channel, day=day)
 
-    def record_text(self, text: str, channel: str = "") -> None:
+    def record_text(self, text: str, channel: str = "",
+                    day: str | None = None) -> None:
         if not text.strip(): return
         tokens = _tokenize(text)
         if not tokens: return
         counts: Counter[str] = Counter(tokens)
         for a, b in zip(tokens, tokens[1:]):
             counts[f"{a} {b}"] += 1
-        self._store.record_terms(dict(counts), channel=channel)
+        self._store.record_terms(dict(counts), channel=channel, day=day)
 
     def _report_section(self, lines: list[str], channels: frozenset[str] | None) -> None:
         trends_7  = self._store.get_trends(7,  5,  channels)
