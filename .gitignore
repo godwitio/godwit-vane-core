@@ -44,4 +44,7 @@ Thumbs.db
 *local*
 
 # Local signal files (only *.sample.json is tracked)
-src/signals/*.json
+src/signals/*/
+!src/signals/sample-project/
+
+log.*

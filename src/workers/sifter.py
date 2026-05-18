@@ -24,15 +24,15 @@ class Sifter:
     """
 
     def __init__(self,
-                 content:         ContentStorePort,
-                 notifications:   NotificationQueuePort,
-                 prefilter:       PreFilter,
-                 router:          SignalRouter,
-                 seen:            SeenStorePort,
-                 radar_store:     RadarStorePort,
-                 trend_analyzer:  TrendAnalyzer,
-                 radar_keywords:  list[str],
-                 logger:          Logger):
+                 content:                  ContentStorePort,
+                 notifications:            NotificationQueuePort,
+                 prefilter:                PreFilter,
+                 router:                   SignalRouter,
+                 seen:                     SeenStorePort,
+                 radar_store:              RadarStorePort,
+                 trend_analyzer:           TrendAnalyzer,
+                 radar_keywords_by_channel: dict[tuple[str, str], list[str]],
+                 logger:                   Logger):
         self._content       = content
         self._notifications = notifications
         self._prefilter     = prefilter
@@ -40,7 +40,7 @@ class Sifter:
         self._seen          = seen
         self._radar_store   = radar_store
         self._trend_analyzer = trend_analyzer
-        self._radar_keywords = radar_keywords
+        self._radar_by_chan = radar_keywords_by_channel
         self._log           = logger
         self._stop = False
 
@@ -75,12 +75,13 @@ class Sifter:
         return True
 
     def _check_radar(self, post: Post) -> RadarHit | None:
-        if not self._radar_keywords:
+        keywords = self._radar_by_chan.get((post.source, post.channel))
+        if not keywords:
             return None
         radar_key = f"radar_{post.source}_{post.kind}_{post.id}"
         if self._seen.is_seen(radar_key, post.content_hash):
             return None
-        matched = KeywordFilter.radar_hit(post.title + " " + post.body, self._radar_keywords)
+        matched = KeywordFilter.radar_hit(post.title + " " + post.body, keywords)
         self._seen.mark_seen(radar_key, "radar", post.content_hash)
         if matched is None:
             return None
@@ -100,11 +101,14 @@ class Sifter:
 
 
 def _signal_hit_dict(h: SignalHit) -> dict:
-    return {
+    d = {
         "signal_name": h.signal_name,
         "decided_by":  h.decided_by,
         "post":        {k: v for k, v in asdict(h.post).items() if k != "content_hash"},
     }
+    if h.confidence is not None:
+        d["confidence"] = h.confidence
+    return d
 
 
 def _radar_hit_dict(r: RadarHit) -> dict:

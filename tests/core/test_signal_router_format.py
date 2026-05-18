@@ -34,7 +34,10 @@ class _CapturingLearner:
 
     def classify(self, post: Post, prompt: GatePrompts, content_id: int):
         self.last_prompt = prompt
-        return True, "bayes"
+        return True, "bayes", 0.9
+
+
+_CHANNEL = ("reddit", "r/x")
 
 
 def _make_router(template: str, learner: _CapturingLearner) -> SignalRouter:
@@ -48,12 +51,13 @@ def _make_router(template: str, learner: _CapturingLearner) -> SignalRouter:
         }
     }
     learners = {("demo", "post"): learner}
-    return SignalRouter(learners=learners, signals=signals,
+    return SignalRouter(learners=learners,
+                        signals_by_channel={_CHANNEL: signals},
                         logger=lambda _msg: None)
 
 
 def _post(title: str = "match", body: str = "") -> Post:
-    return Post(id="1", source="reddit", channel="r/x", kind="post",
+    return Post(id="1", source=_CHANNEL[0], channel=_CHANNEL[1], kind="post",
                 title=title, body=body, url="http://x")
 
 

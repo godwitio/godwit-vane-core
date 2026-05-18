@@ -18,9 +18,8 @@ task-focused: do these steps in order.
 
 - Ollama running locally with a small labelling model loaded.
 - A Discord server with a channel and a webhook.
-- Core running, polling a few subreddits, classifying posts against the
-  bundled `pain` / `migration` / `comparison` signals, and pushing hits
-  into Discord.
+- Core running, polling a few subreddits, classifying posts against your
+  `pain` / `migration` / `comparison` signals, and pushing hits into Discord.
 
 ---
 
@@ -181,32 +180,34 @@ swap in your own. Generic templates live next to each one as
 > **Shortcut.** If you'd rather have Claude draft all five files from a few
 > questions about your product (and any URLs you point it at), paste the
 > prompt in [.project/prompts/bootstrap-signals.md](.project/prompts/bootstrap-signals.md)
-> into a Claude chat and save the output into `src/signals/`. You can still
+> into a Claude chat and save the output into `src/signals/<your-project>/`. You can still
 > skim the schemas below to understand what you're getting.
 
 ```bash
-cp src/signals/pain.sample.json        src/signals/pain.json
-cp src/signals/migration.sample.json   src/signals/migration.json
-cp src/signals/comparison.sample.json  src/signals/comparison.json
-cp src/signals/settings.sample.json    src/signals/settings.json
-cp src/signals/radar.sample.json       src/signals/radar.json
+mkdir -p src/signals/my-project
+cp src/signals/sample-project/pain.sample.json        src/signals/my-project/pain.json
+cp src/signals/sample-project/migration.sample.json   src/signals/my-project/migration.json
+cp src/signals/sample-project/comparison.sample.json  src/signals/my-project/comparison.json
+cp src/signals/sample-project/settings.sample.json    src/signals/my-project/settings.json
+cp src/signals/sample-project/radar.sample.json       src/signals/my-project/radar.json
 ```
 
 Open each `.json` and replace the placeholders:
 
 - **`pain.json` / `migration.json` / `comparison.json`** — replace
-  `<YOUR_CATEGORY>` in `post_prompt` and `comment_prompt` with your domain
-  (e.g. `password managers`, `time-tracking apps`, `headless CMS`). Tune the
-  `keywords` list to vocabulary your audience actually uses; keyword hits
-  are the cheap pre-filter before the LLM sees a post.
+  `<YOUR_CATEGORY>` in the `domain_*_prompt` fields with your domain
+  (e.g. `password managers`, `time-tracking apps`, `headless CMS`), and
+  fill in the anchor names. Tune the `keywords` list to vocabulary your
+  audience actually uses; keyword hits are the cheap pre-filter before the
+  LLM sees a post.
 - **`settings.json`** — see step 7 below for `<subreddit_a>` /
   `<subreddit_b>`.
 - **`radar.json`** — replace `<your_brand>`, `<your_product>`,
   `<competitor_name>` with the literal terms you want exact-match alerts on.
 
-The loader picks files up by filename: drop in `feature_request.json` and
-the next process start has a `feature_request` signal. Files ending in
-`.sample.json` are ignored.
+The loader scans each project subfolder for `*.json` files (files ending in
+`.sample.json` are ignored). Drop in `feature_request.json` and the next
+process start has a `feature_request` signal.
 
 > **Skip this step?** Fine for a smoke test — the shipped defaults will
 > classify against the storage examples. Come back here once the pipeline
@@ -216,7 +217,7 @@ the next process start has a `feature_request` signal. Files ending in
 
 ## 7. Pick the subreddits to watch
 
-Edit [src/signals/settings.json](src/signals/settings.json). The shipped
+Edit `src/signals/my-project/settings.json` (or whichever project name you chose). The shipped
 default watches a generic DevOps/AWS/selfhosted mix:
 
 ```json
@@ -234,7 +235,7 @@ default watches a generic DevOps/AWS/selfhosted mix:
 
 - **`market`** — scanned for signal matches (pain, migration, comparison,
   plus any `src/signals/*.json` you add).
-- **`radar`** — scanned for exact-keyword hits from [src/signals/radar.json](src/signals/radar.json).
+- **`radar`** — scanned for exact-keyword hits from `src/signals/<project>/radar.json`.
 - **`scan_interval_minutes`** — how often the Pacer enqueues a scan.
   60 is a sensible floor; lower mostly wastes LLM calls early on.
 
@@ -299,9 +300,9 @@ If nothing arrives after ~10 minutes:
 
 ## 10. Day-2 tuning
 
-- **Add a signal** — drop a new file into [src/signals/](src/signals/)
-  following the `pain.json` / `migration.json` shape. No code change;
-  picked up on next process start.
+- **Add a signal** — drop a new `.json` file into your project folder
+  (`src/signals/<project>/`) following the `pain.json` / `migration.json`
+  shape. No code change; picked up on next process start.
 - **Tighten noise** — add `per_channel` pre-filter rules (`min_score`,
   `max_age_hours`, `author_excludes`, flair rules) in
   `settings.json`. Excluded items never reach the LLM.

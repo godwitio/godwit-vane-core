@@ -1,8 +1,9 @@
 from datetime import date
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from services.seeder.seeder import Seeder, SeederConfig
 from sources.brave.search import BraveHit
+from sources.errors import PermanentError, RetryableError
 
 
 class FakeTaskQueue:
@@ -57,6 +58,12 @@ def _logger():
 
 
 def _mk_seeder(*, brave, tasks, state, channels, signals):
+    # Tests pass `channels` + `signals` for readability; the seeder itself
+    # consumes pre-built (reddit-channel, signal-name) pairs (project
+    # scoping happens upstream in monitor.py).
+    pairs = [(ch, sig)
+             for ch in channels.get("reddit", [])
+             for sig in signals.keys()]
     return Seeder(
         brave=brave,
         brave_limiter=FakeLimiter(),
@@ -64,7 +71,7 @@ def _mk_seeder(*, brave, tasks, state, channels, signals):
         seen=FakeSeen(),
         state=state,
         signals_fn=lambda: signals,
-        channels=channels,
+        pairs=pairs,
         config=SeederConfig(max_age_days=90),
         logger=_logger(),
     )
@@ -199,3 +206,44 @@ def test_empty_keywords_skips_pair_but_marks_seeded():
     assert brave.search.call_count == 0
     assert tasks.enqueued == []
     assert ("golang", "comparison") in state.marks
+
+
+def test_retryable_error_retries_same_window_until_success():
+    brave = MagicMock()
+    brave.search.side_effect = [
+        RetryableError("brave rate limited", retry_after=7),
+        [BraveHit(url="https://reddit.com/r/golang/comments/abc123/t/", title="t")],
+    ]
+    tasks = FakeTaskQueue()
+    state = FakeState()
+    s = _mk_seeder(
+        brave=brave, tasks=tasks, state=state,
+        channels={"reddit": ["golang"]},
+        signals={"comparison": {"keywords": ["vs"]}},
+    )
+
+    with patch("services.seeder.seeder.time.sleep") as sleep:
+        s.run()
+
+    assert brave.search.call_count == 2
+    sleep.assert_called_once_with(7)
+    assert ("golang", "comparison") in state.marks
+    assert [e[0] for e in tasks.enqueued] == ["enrich", "comments"]
+
+
+def test_permanent_error_aborts_pair_without_marking_seeded():
+    brave = MagicMock()
+    brave.search.side_effect = PermanentError("brave 403: bad token")
+    tasks = FakeTaskQueue()
+    state = FakeState()
+    s = _mk_seeder(
+        brave=brave, tasks=tasks, state=state,
+        channels={"reddit": ["golang"]},
+        signals={"comparison": {"keywords": ["vs"]}},
+    )
+
+    s.run()
+
+    assert brave.search.call_count == 1
+    assert tasks.enqueued == []
+    assert state.marks == []

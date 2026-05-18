@@ -97,10 +97,11 @@ CREATE TABLE IF NOT EXISTS radar_hits (
 );
 
 CREATE TABLE IF NOT EXISTS term_daily (
-    term  TEXT NOT NULL,
-    day   TEXT NOT NULL,
-    count INTEGER NOT NULL,
-    PRIMARY KEY (term, day)
+    term    TEXT NOT NULL,
+    day     TEXT NOT NULL,
+    channel TEXT NOT NULL DEFAULT '',
+    count   INTEGER NOT NULL,
+    PRIMARY KEY (term, day, channel)
 );
 
 CREATE TABLE IF NOT EXISTS etag_cache (
@@ -116,3 +117,17 @@ CREATE TABLE IF NOT EXISTS seeding_state (
     seeded_at  REAL NOT NULL,
     PRIMARY KEY (channel, signal)
 );
+
+CREATE TABLE IF NOT EXISTS bayes_retrains (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_name  TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    retrained_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trend_stop_terms (
+    term     TEXT PRIMARY KEY,
+    added_at TEXT NOT NULL  -- UTC date, ISO-8601
+);
+

@@ -6,3 +6,4 @@ scikit-learn
 joblib
 anthropic
 apprise
+textual>=0.80,<1.0
