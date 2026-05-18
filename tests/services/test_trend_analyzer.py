@@ -70,12 +70,28 @@ class _SilentLogger:
     def debug(self, msg): pass
 
 
-def _analyzer(*, labeller=None, trends_7=None, trends_30=None, new_terms=None):
-    notifier = FakeNotifier()
+_DEFAULT_PROJ = "myproj"
+_DEFAULT_CHANS = frozenset({"awss"})
+
+
+def _analyzer(*, labeller=None, trends_7=None, trends_30=None, new_terms=None,
+              project_channels=None):
+    """Single-project default so every report-emitting test has a notifier
+    to inspect. Tests that need multi-project semantics pass their own
+    project_channels dict and read the per-project notifier via the
+    returned `notifiers` dict."""
+    proj_chans = project_channels or {_DEFAULT_PROJ: _DEFAULT_CHANS}
+    notifiers = {p: FakeNotifier() for p in proj_chans}
     store = FakeStore(trends_7=trends_7, trends_30=trends_30, new_terms=new_terms)
-    ta = TrendAnalyzer(store=store, notifier=notifier,
-                       logger=_SilentLogger(), labeller=labeller)
-    return ta, notifier
+    ta = TrendAnalyzer(store=store, notifiers_by_project=notifiers,
+                       logger=_SilentLogger(), labeller=labeller,
+                       project_channels=proj_chans)
+    return ta, notifiers, store
+
+
+def _single_notifier(notifiers):
+    """Convenience for the common single-project case."""
+    return notifiers[_DEFAULT_PROJ]
 
 
 # ── 1. Tokenizer: numeric / punctuation tokens ────────────────────────────────
@@ -107,7 +123,8 @@ def test_tokenize_keeps_tech_terms():
 
 def test_tokenize_bigrams_recorded_via_record_text():
     store = FakeStore()
-    ta = TrendAnalyzer(store=store, notifier=FakeNotifier(), logger=_SilentLogger())
+    ta = TrendAnalyzer(store=store, notifiers_by_project={},
+                       logger=_SilentLogger())
     ta.record_text("rust framework")
     assert store.recorded
     assert store.recorded[0].get("rust framework", 0) >= 1
@@ -115,7 +132,8 @@ def test_tokenize_bigrams_recorded_via_record_text():
 
 def test_record_post_passes_channel_to_store():
     store = FakeStore()
-    ta = TrendAnalyzer(store=store, notifier=FakeNotifier(), logger=_SilentLogger())
+    ta = TrendAnalyzer(store=store, notifiers_by_project={},
+                       logger=_SilentLogger())
     post = Post(id="p1", source="reddit", channel="localllama", title="llm rocks", body="")
     ta.record_post(post)
     assert store.recorded_channels == ["localllama"]
@@ -124,7 +142,8 @@ def test_record_post_passes_channel_to_store():
 def test_record_post_default_day_is_none_meaning_today():
     # Live recording leaves day=None so the adapter stamps today.
     store = FakeStore()
-    ta = TrendAnalyzer(store=store, notifier=FakeNotifier(), logger=_SilentLogger())
+    ta = TrendAnalyzer(store=store, notifiers_by_project={},
+                       logger=_SilentLogger())
     ta.record_post(Post(id="p1", source="reddit", channel="ch", title="rust"))
     assert store.recorded_days == [None]
 
@@ -132,7 +151,8 @@ def test_record_post_default_day_is_none_meaning_today():
 def test_record_post_with_explicit_day_threads_through_to_store():
     # Backfill path supplies the day from the content row's created_at.
     store = FakeStore()
-    ta = TrendAnalyzer(store=store, notifier=FakeNotifier(), logger=_SilentLogger())
+    ta = TrendAnalyzer(store=store, notifiers_by_project={},
+                       logger=_SilentLogger())
     ta.record_post(Post(id="p1", source="reddit", channel="ch", title="rust"),
                    day="2025-08-01")
     assert store.recorded_days == ["2025-08-01"]
@@ -141,29 +161,29 @@ def test_record_post_with_explicit_day_threads_through_to_store():
 # ── 2. _is_interesting: labeller delegation ───────────────────────────────────
 
 def test_is_interesting_no_labeller_always_true():
-    ta, _ = _analyzer()
+    ta, _, _ = _analyzer()
     assert ta._is_interesting("anything") is True
 
 
 def test_is_interesting_labeller_yes():
-    ta, _ = _analyzer(labeller=ScriptedLabeller([True]))
+    ta, _, _ = _analyzer(labeller=ScriptedLabeller([True]))
     assert ta._is_interesting("kubernetes") is True
 
 
 def test_is_interesting_labeller_no():
-    ta, _ = _analyzer(labeller=ScriptedLabeller([False]))
+    ta, _, _ = _analyzer(labeller=ScriptedLabeller([False]))
     assert ta._is_interesting("they") is False
 
 
 def test_is_interesting_labeller_abstain_is_conservative_no():
     # None (abstain) must be treated as NO — keep noise out
-    ta, _ = _analyzer(labeller=ScriptedLabeller([None]))
+    ta, _, _ = _analyzer(labeller=ScriptedLabeller([None]))
     assert ta._is_interesting("ambiguous") is False
 
 
 def test_is_interesting_term_appears_in_prompt():
     labeller = ScriptedLabeller([True])
-    ta, _ = _analyzer(labeller=labeller)
+    ta, _, _ = _analyzer(labeller=labeller)
     ta._is_interesting("kubernetes")
     assert "kubernetes" in labeller.calls[0]
 
@@ -171,76 +191,77 @@ def test_is_interesting_term_appears_in_prompt():
 # ── 3. report(): LLM filtering and notifier output ───────────────────────────
 
 def test_report_always_sends_to_notifier():
-    ta, notifier = _analyzer()
+    ta, notifiers, _ = _analyzer()
     ta.report()
-    assert len(notifier.sent) == 1
+    assert len(_single_notifier(notifiers).sent) == 1
 
 
 def test_report_7day_term_rejected_by_labeller_not_in_body():
-    ta, notifier = _analyzer(
+    ta, notifiers, _ = _analyzer(
         labeller=ScriptedLabeller([False]),
         trends_7=[TermTrend(term="they", current=100, previous=50, ratio=2.0)],
     )
     ta.report()
-    assert "they" not in notifier.sent[0]
+    assert "they" not in _single_notifier(notifiers).sent[0]
 
 
 def test_report_7day_term_accepted_by_labeller_appears_in_body():
-    ta, notifier = _analyzer(
+    ta, notifiers, _ = _analyzer(
         labeller=ScriptedLabeller([True]),
         trends_7=[TermTrend(term="kubernetes", current=100, previous=50, ratio=2.0)],
     )
     ta.report()
-    assert "kubernetes" in notifier.sent[0]
+    assert "kubernetes" in _single_notifier(notifiers).sent[0]
 
 
 def test_report_30day_ratio_none_term_never_shown():
     # ratio=None means no prior-window data — must be skipped in the 30-day section
-    ta, notifier = _analyzer(
+    ta, notifiers, _ = _analyzer(
         trends_30=[TermTrend(term="rust", current=50, previous=0, ratio=None)],
     )
     ta.report()
-    assert "rust" not in notifier.sent[0]
+    assert "rust" not in _single_notifier(notifiers).sent[0]
 
 
 def test_report_30day_only_ratio_none_no_section_header():
     # When every 30-day candidate is ratio=None (cold start), the section must
     # not emit an empty "**30-day window...**" header with no body underneath.
-    ta, notifier = _analyzer(
+    ta, notifiers, _ = _analyzer(
         trends_30=[TermTrend(term="rust", current=50, previous=0, ratio=None)],
     )
     ta.report()
-    assert "30-day window" not in notifier.sent[0]
+    assert "30-day window" not in _single_notifier(notifiers).sent[0]
 
 
 def test_report_7day_all_terms_rejected_no_section_header():
     # If every candidate is filtered by the labeller, hide the section header.
-    ta, notifier = _analyzer(
+    ta, notifiers, _ = _analyzer(
         labeller=ScriptedLabeller([False]),
         trends_7=[TermTrend(term="they", current=100, previous=50, ratio=2.0)],
     )
     ta.report()
-    assert "7-day window" not in notifier.sent[0]
+    assert "7-day window" not in _single_notifier(notifiers).sent[0]
 
 
 def test_report_7day_new_term_still_shown():
     # A NEW item (ratio=None) in the 7-day section is meaningful when the
     # store has decided there is a real prev window. Keep showing it.
-    ta, notifier = _analyzer(
+    ta, notifiers, _ = _analyzer(
         trends_7=[TermTrend(term="zfs", current=20, previous=0, ratio=None)],
     )
     ta.report()
-    assert "zfs" in notifier.sent[0]
-    assert "NEW" in notifier.sent[0]
+    body = _single_notifier(notifiers).sent[0]
+    assert "zfs" in body
+    assert "NEW" in body
 
 
 def test_report_new_terms_section_llm_rejects_first_accepts_second():
-    ta, notifier = _analyzer(
+    ta, notifiers, _ = _analyzer(
         labeller=ScriptedLabeller([False, True]),
         new_terms=[("they", 500), ("docker", 200)],
     )
     ta.report()
-    body = notifier.sent[0]
+    body = _single_notifier(notifiers).sent[0]
     assert "they" not in body
     assert "docker" in body
 
@@ -249,23 +270,23 @@ def test_report_7day_section_capped_at_10():
     # 15 candidates, all pass LLM — only 10 should appear
     terms = [TermTrend(term=f"tech{i}", current=10 + i, previous=5, ratio=2.0)
              for i in range(15)]
-    ta, notifier = _analyzer(
+    ta, notifiers, _ = _analyzer(
         labeller=ScriptedLabeller([True] * 10),
         trends_7=terms,
     )
     ta.report()
-    body = notifier.sent[0]
+    body = _single_notifier(notifiers).sent[0]
     shown = sum(1 for i in range(15) if f"tech{i}" in body)
     assert shown == 10
 
 
 def test_report_no_labeller_passes_all_terms():
-    ta, notifier = _analyzer(
+    ta, notifiers, _ = _analyzer(
         trends_7=[TermTrend(term="python", current=20, previous=10, ratio=2.0)],
         new_terms=[("rust", 15)],
     )
     ta.report()
-    body = notifier.sent[0]
+    body = _single_notifier(notifiers).sent[0]
     assert "python" in body
     assert "rust" in body
 
@@ -274,12 +295,13 @@ def test_report_no_labeller_passes_all_terms():
 
 def _store_and_analyzer(*, stop_terms=None, labeller=None,
                         trends_7=None, new_terms=None):
-    notifier = FakeNotifier()
+    notifiers = {_DEFAULT_PROJ: FakeNotifier()}
     store = FakeStore(trends_7=trends_7, new_terms=new_terms,
                       stop_terms=stop_terms)
-    ta = TrendAnalyzer(store=store, notifier=notifier,
-                       logger=_SilentLogger(), labeller=labeller)
-    return ta, store, notifier
+    ta = TrendAnalyzer(store=store, notifiers_by_project=notifiers,
+                       logger=_SilentLogger(), labeller=labeller,
+                       project_channels={_DEFAULT_PROJ: _DEFAULT_CHANS})
+    return ta, store, notifiers
 
 
 def test_preloaded_stop_term_returns_false_without_llm_call():
@@ -322,58 +344,58 @@ def test_llm_abstain_does_not_add_to_stop_terms():
 
 def test_report_preloaded_stop_term_excluded_without_llm():
     labeller = ScriptedLabeller([])  # zero calls expected
-    ta, store, notifier = _store_and_analyzer(
+    ta, store, notifiers = _store_and_analyzer(
         stop_terms={"they"},
         labeller=labeller,
         trends_7=[TermTrend(term="they", current=50, previous=25, ratio=2.0)],
     )
     ta.report()
-    assert "they" not in notifier.sent[0]
+    assert "they" not in notifiers[_DEFAULT_PROJ].sent[0]
     assert labeller.calls == []
 
 
-# ── 5. Project-scoped trends ──────────────────────────────────────────────────
+# ── 5. Per-project reports ────────────────────────────────────────────────────
 
-def test_report_no_project_channels_queries_store_without_filter():
-    store = FakeStore(trends_7=[TermTrend("python", 10, 5, 2.0)])
-    ta = TrendAnalyzer(store=store, notifier=FakeNotifier(), logger=_SilentLogger())
-    ta.report()
-    # channels arg should be None (no filter)
-    assert all(c is None for _, _, c in store.trend_calls)
-
-
-def test_report_with_project_channels_queries_per_project_channels():
+def test_report_filters_store_by_project_channels():
     chans = frozenset({"awss", "dataeng"})
-    store = FakeStore(trends_7=[TermTrend("python", 10, 5, 2.0)])
-    notifier = FakeNotifier()
-    ta = TrendAnalyzer(store=store, notifier=notifier, logger=_SilentLogger(),
-                       project_channels={"myproj": chans})
+    ta, _, store = _analyzer(
+        trends_7=[TermTrend("python", 10, 5, 2.0)],
+        project_channels={"myproj": chans},
+    )
     ta.report()
     called_channels = {c for _, _, c in store.trend_calls if c is not None}
     assert chans in called_channels
 
 
-def test_report_multi_project_includes_project_name_headers():
-    store = FakeStore()
-    notifier = FakeNotifier()
-    ta = TrendAnalyzer(store=store, notifier=notifier, logger=_SilentLogger(),
-                       project_channels={
-                           "cloud-storage": frozenset({"awss"}),
-                           "ai-tools":      frozenset({"localllama"}),
-                       })
+def test_report_each_project_gets_its_own_dispatch():
+    ta, notifiers, _ = _analyzer(
+        project_channels={
+            "cloud-storage": frozenset({"awss"}),
+            "ai-tools":      frozenset({"localllama"}),
+        },
+    )
     ta.report()
-    body = notifier.sent[0]
-    assert "cloud-storage" in body
-    assert "ai-tools" in body
+    # Two notifiers, one send each.
+    assert len(notifiers["cloud-storage"].sent) == 1
+    assert len(notifiers["ai-tools"].sent) == 1
+    # Each report names its own project, not the other.
+    assert "cloud-storage" in notifiers["cloud-storage"].sent[0]
+    assert "ai-tools"      not in notifiers["cloud-storage"].sent[0]
+    assert "ai-tools"      in notifiers["ai-tools"].sent[0]
+    assert "cloud-storage" not in notifiers["ai-tools"].sent[0]
 
 
-def test_report_single_project_no_project_header():
-    store = FakeStore()
-    notifier = FakeNotifier()
-    ta = TrendAnalyzer(store=store, notifier=notifier, logger=_SilentLogger(),
-                       project_channels={"myproj": frozenset({"awss"})})
+def test_report_includes_project_name_in_header():
+    ta, notifiers, _ = _analyzer()
     ta.report()
-    # With a single project, the [myproj] header should still appear
-    # (helps distinguish project-scoped from global reports)
-    body = notifier.sent[0]
-    assert "myproj" in body
+    assert _DEFAULT_PROJ in _single_notifier(notifiers).sent[0]
+
+
+def test_report_no_project_channels_emits_nothing():
+    # With no projects configured, there is nothing to dispatch.
+    notifiers: dict = {}
+    store = FakeStore()
+    ta = TrendAnalyzer(store=store, notifiers_by_project=notifiers,
+                       logger=_SilentLogger(), project_channels={})
+    ta.report()
+    assert store.trend_calls == []

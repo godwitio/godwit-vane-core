@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import anthropic
+from adapters import heartbeat
 from core.models import Post
 from log import Logger
 from ports.labeller import LabellerPort
@@ -41,11 +42,13 @@ class AnthropicLabeller(LabellerPort):
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = resp.content[0].text.strip()
+            heartbeat.note_ok("anthropic")
             self._log.debug(f"{tag} <- raw={raw!r}")
             text = raw.upper()
             if text.startswith("YES"): return True
             if text.startswith("NO"):  return False
             return None
         except Exception as e:
+            heartbeat.note_err("anthropic", str(e))
             self._log(f"{tag} error: {e}")
             return None

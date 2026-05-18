@@ -31,7 +31,7 @@ class Sifter:
                  seen:                     SeenStorePort,
                  radar_store:              RadarStorePort,
                  trend_analyzer:           TrendAnalyzer,
-                 radar_keywords_by_channel: dict[tuple[str, str], list[str]],
+                 radar_keywords_by_channel: dict[tuple[str, str], list[tuple[str, str]]],
                  logger:                   Logger):
         self._content       = content
         self._notifications = notifications
@@ -52,8 +52,7 @@ class Sifter:
         try:
             self._trend_analyzer.record_post(post)
 
-            radar_hit = self._check_radar(post)
-            if radar_hit:
+            for radar_hit in self._check_radar(post):
                 self._radar_store.save_radar_hit(radar_hit)
                 self._notifications.enqueue("radar_hit", _radar_hit_dict(radar_hit))
 
@@ -74,22 +73,35 @@ class Sifter:
             self._content.fail(content_id, str(e))
         return True
 
-    def _check_radar(self, post: Post) -> RadarHit | None:
-        keywords = self._radar_by_chan.get((post.source, post.channel))
-        if not keywords:
-            return None
-        radar_key = f"radar_{post.source}_{post.kind}_{post.id}"
-        if self._seen.is_seen(radar_key, post.content_hash):
-            return None
-        matched = KeywordFilter.radar_hit(post.title + " " + post.body, keywords)
-        self._seen.mark_seen(radar_key, "radar", post.content_hash)
-        if matched is None:
-            return None
-        return RadarHit(
-            source=post.source, source_id=post.id, kind=post.kind,
-            channel=post.channel, title=post.title or post.parent_title,
-            url=post.url, score=post.score, keyword=matched,
-        )
+    def _check_radar(self, post: Post) -> list[RadarHit]:
+        # Fan-out: each project that lists this channel in its radar gets an
+        # independent match attempt with its own keywords and its own seen
+        # tracking, so one project's prior view of a post doesn't suppress
+        # another project's hit.
+        pairs = self._radar_by_chan.get((post.source, post.channel))
+        if not pairs:
+            return []
+        by_project: dict[str, list[str]] = {}
+        for keyword, project in pairs:
+            by_project.setdefault(project, []).append(keyword)
+
+        hits: list[RadarHit] = []
+        text = post.title + " " + post.body
+        for project, keywords in by_project.items():
+            radar_key = f"radar_{project}_{post.source}_{post.kind}_{post.id}"
+            if self._seen.is_seen(radar_key, post.content_hash):
+                continue
+            matched = KeywordFilter.radar_hit(text, keywords)
+            self._seen.mark_seen(radar_key, "radar", post.content_hash)
+            if matched is None:
+                continue
+            hits.append(RadarHit(
+                source=post.source, source_id=post.id, kind=post.kind,
+                channel=post.channel, title=post.title or post.parent_title,
+                url=post.url, score=post.score, keyword=matched,
+                project=project,
+            ))
+        return hits
 
     def run_forever(self, idle_sleep: float = 5.0) -> None:
         while not self._stop:

@@ -26,14 +26,16 @@ configuration. Single dependency, actively maintained.
 
 ## Decision
 
-Apprise is the notification backend. Users configure one or more Apprise URLs
-in Settings (future UI) or via `APPRISE_URLS` env.
+Apprise is the notification backend. Operators configure destinations
+per-project in each `src/signals/<project>/settings.json` under the
+`notifier` block — JSON arrays `signals_urls` (for market-signal digests
+and trend reports) and `radar_urls` (for radar digests).
 
 `NotifierPort` keeps its interface (`send(hits, radar_hits, confidence)`,
 `send_raw(message)`). The `AppriseNotifier` adapter implements it by composing
 the digest markdown and calling `apprise.notify()`.
 
-Multiple URLs fan out — same digest goes to all configured channels.
+Multiple URLs in a list fan out — same digest goes to every URL in the list.
 
 ## Consequences
 
@@ -50,12 +52,16 @@ Multiple URLs fan out — same digest goes to all configured channels.
   rich formatting.
 - Apprise version upgrades may change URL syntax or behavior.
 
-**Optional per-channel destination routing.** `APPRISE_URLS_SIGNALS` and
-`APPRISE_URLS_RADAR` allow operators to split the signal-hit and radar-hit
-streams to independent destinations. Both keys are optional and fall back to
-`APPRISE_URLS`, so existing deployments are unchanged. Routing is
-destination-key based (normalized URL set): same key merges into one digest,
-different keys split into independent sends with isolated retry/failure.
+**Per-project, per-stream destination routing.** Each project declares its
+own `signals_urls` and `radar_urls` arrays in its `settings.json`. There is
+no env fallback — startup fails fast if a project defines signals (or radar
+keywords) but leaves the corresponding array missing or empty. Routing is
+destination-key based (normalized URL set): identical lists across
+projects/streams collapse into one combined send (with a multi-project
+title), distinct lists split into independent sends with isolated
+retry/failure. Radar matches fan out per-project: a single post matching
+keywords from two projects on a shared channel emits one `RadarHit` per
+project with its own seen-tracking.
 
 ## URL examples
 

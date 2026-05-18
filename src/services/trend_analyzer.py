@@ -73,13 +73,13 @@ def _tokenize(text: str) -> list[str]:
 class TrendAnalyzer:
 
     def __init__(self,
-                 store:            AnalyticsStorePort,
-                 notifier:         NotifierPort,
-                 logger:           Callable[[str], None],
-                 labeller:         LabellerPort | None = None,
-                 project_channels: dict[str, frozenset[str]] | None = None):
+                 store:                AnalyticsStorePort,
+                 notifiers_by_project: dict[str, NotifierPort],
+                 logger:               Callable[[str], None],
+                 labeller:             LabellerPort | None = None,
+                 project_channels:     dict[str, frozenset[str]] | None = None):
         self._store      = store
-        self._notifier   = notifier
+        self._notifiers  = dict(notifiers_by_project)
         self._log        = logger
         self._labeller   = labeller
         self._proj_chans = project_channels or {}
@@ -153,14 +153,19 @@ class TrendAnalyzer:
             lines.extend(entries)
 
     def report(self) -> None:
-        lines = [f"📈 **Trend Report** — {time.strftime('%Y-%m-%d', time.gmtime())}"]
-        if self._proj_chans:
-            for proj_name, channels in self._proj_chans.items():
-                lines.append(f"\n**[{proj_name}]**")
-                self._report_section(lines, channels)
-        else:
-            self._report_section(lines, None)
-        self._notifier.send_raw("\n".join(lines))
+        # One report per project, dispatched to that project's signal
+        # destination. Projects without a notifier configured are skipped
+        # (validation at startup guarantees this only happens if a project
+        # has no signals and no radar — in which case there's nothing to
+        # trend on anyway).
+        date = time.strftime("%Y-%m-%d", time.gmtime())
+        for proj_name, channels in self._proj_chans.items():
+            notifier = self._notifiers.get(proj_name)
+            if notifier is None:
+                continue
+            lines = [f"📈 **Trend Report ({proj_name})** — {date}"]
+            self._report_section(lines, channels)
+            notifier.send_raw("\n".join(lines))
 
     def purge(self, keep_days: int = 90) -> None:
         removed = self._store.purge_old(keep_days=keep_days)

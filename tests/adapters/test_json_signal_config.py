@@ -153,7 +153,30 @@ def test_top_level_files_ignored(tmp_path):
     assert set(flat.keys()) == {"alpha__pain"}
 
 
-# ── 7. Same signal filename across projects → both load independently ───────
+# ── 7. settings.json notifier.signals_urls / radar_urls round-trip ──────────
+def test_notifier_urls_round_trip(tmp_path):
+    """Per-project Apprise destination lists live in settings.json under the
+    `notifier` block. The adapter is schema-blind — it carries the lists
+    verbatim onto ProjectConfig.settings for monitor.py to validate and
+    consume."""
+    _write(tmp_path / "alpha", "settings.json", {
+        "channels": {"reddit": {"market": ["x"], "radar": ["x"]}},
+        "notifier": {
+            "max_batch": 20,
+            "batch_timeout_seconds": 300,
+            "signals_urls": ["discord://a/b", "tgram://c/d"],
+            "radar_urls":   ["pover://u@t"],
+        },
+    })
+    _write(tmp_path / "alpha", "pain.json", _cascade_payload())
+
+    projects = JsonSignalConfigAdapter(str(tmp_path)).load_projects()
+    ncfg = projects["alpha"].settings["notifier"]
+    assert ncfg["signals_urls"] == ["discord://a/b", "tgram://c/d"]
+    assert ncfg["radar_urls"]   == ["pover://u@t"]
+
+
+# ── 8. Same signal filename across projects → both load independently ───────
 def test_same_signal_name_across_projects_loads_both(tmp_path):
     """A `pain.json` in two projects produces two distinct composite IDs
     so both pipelines run with their own training data and Bayes pickles.

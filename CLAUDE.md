@@ -13,7 +13,7 @@ repo.
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env          # fill APPRISE_URLS, OLLAMA_URL, etc.
+cp .env.example .env          # fill OLLAMA_URL, REDDIT_USER_AGENT, etc.
 python src/monitor.py
 
 docker build -t godwit-vane .

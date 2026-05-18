@@ -11,8 +11,17 @@ import time
 
 import pytest
 
+from adapters import heartbeat
 from adapters.tui_metrics import TuiMetrics
 from taskqueue.migrations import open_db
+
+
+@pytest.fixture(autouse=True)
+def _clear_heartbeat():
+    """Heartbeat state is module-level — keep tests isolated."""
+    heartbeat.reset()
+    yield
+    heartbeat.reset()
 
 
 # ── Fakes for the non-DB ports the metrics adapter receives ────────────
@@ -443,6 +452,29 @@ def test_daily_rollup_aggregates_match_totals(conn, metrics):
     assert sum(r.llm     for r in rows) == 1   # bayes excluded by LIKE 'llm%'
     # Days are ordered most-recent first.
     assert rows == sorted(rows, key=lambda r: r.day, reverse=True)
+
+
+# ── Labeller heartbeat ────────────────────────────────────────────────
+def test_adapters_labeller_unknown_until_first_call(metrics):
+    rows = {r.name: r for r in metrics.adapters()}
+    assert rows["ollama"].state    == "unknown"
+    assert rows["anthropic"].state == "unknown"
+
+
+def test_adapters_labeller_up_after_note_ok(metrics):
+    heartbeat.note_ok("ollama")
+    rows = {r.name: r for r in metrics.adapters()}
+    assert rows["ollama"].state == "up"
+    assert "last ok" in rows["ollama"].detail
+    # The other backend stays unknown if it was never called.
+    assert rows["anthropic"].state == "unknown"
+
+
+def test_adapters_labeller_down_after_note_err(metrics):
+    heartbeat.note_err("ollama", "ConnectionRefusedError")
+    rows = {r.name: r for r in metrics.adapters()}
+    assert rows["ollama"].state == "down"
+    assert "ConnectionRefusedError" in rows["ollama"].detail
 
 
 # ── 7. Perf guard for 1 Hz tick budget ────────────────────────────────

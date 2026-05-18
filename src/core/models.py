@@ -45,3 +45,4 @@ class RadarHit:
     url:       str
     score:     int | None
     keyword:   str
+    project:   str = ""

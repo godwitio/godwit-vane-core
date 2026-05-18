@@ -40,7 +40,8 @@ notifications through Apprise.
   `src/signals/<project>/radar.json`. See
   [Signals vs. Radar](#signals-vs-radar) below.
 - **Apprise notifications.** Discord, Telegram, Slack, ntfy, email, and
-  ~90 other targets via one `APPRISE_URLS` setting.
+  ~90 other targets, configured per-project in each
+  `src/signals/<project>/settings.json`.
 - **Single-host, SQLite-backed.** One file on disk is the task queue, the
   seen-set, the training store, and the analytics table. No external
   broker, no external DB.
@@ -88,7 +89,7 @@ Full overview: [.project/architecture.md](.project/architecture.md).
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env          # fill APPRISE_URLS, OLLAMA_URL, etc.
+cp .env.example .env          # fill OLLAMA_URL, REDDIT_USER_AGENT, etc.
 python src/monitor.py
 ```
 
@@ -166,7 +167,12 @@ invocations only re-query pairs that haven't been seeded yet.
   Exact strings to alert on (your brand names, product names, article slugs).
 - **Channels and pre-filters** — `src/signals/<project>/settings.json`.
   Which subreddits / communities to scan, scan interval, retention.
-- **Notifications** — `APPRISE_URLS` in `.env` (comma-separated).
+- **Notifications** — per-project Apprise destinations in
+  `src/signals/<project>/settings.json` under the `notifier` block:
+  `signals_urls` (array) for signal digests and trend reports,
+  `radar_urls` (array) for radar digests. Each project must define both
+  non-empty arrays if it has signals / radar keywords respectively;
+  startup fails fast otherwise.
   Full target list: <https://github.com/caronc/apprise/wiki>.
 - **Labeller** — `LABELLER=ollama` (default, local) or `anthropic`.
   All sources go through the labeller you pick.

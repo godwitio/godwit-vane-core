@@ -191,7 +191,10 @@ HARVESTER_CFG         = _first.settings.get("harvester", {})
 #   _PACER_CHANNELS[source]              -> sorted list of every channel
 #                                            (market ∪ radar) we should poll.
 _SIGNALS_BY_CHAN: dict[tuple[str, str], dict] = {}
-_RADAR_BY_CHAN:   dict[tuple[str, str], list[str]] = {}
+# Radar pairs carry the owning project so the sifter can fan out one hit per
+# project on a shared channel, and so the notifier can route each radar hit to
+# that project's destinations.
+_RADAR_BY_CHAN:   dict[tuple[str, str], list[tuple[str, str]]] = {}
 _PACER_CHANNELS:  dict[str, set[str]] = {}
 
 for _proj in _PROJECTS.values():
@@ -214,7 +217,9 @@ for _proj in _PROJECTS.values():
             _bucket.update(_proj_signals)
         if _proj.radar_keywords:
             for _ch in _radar:
-                _RADAR_BY_CHAN.setdefault((_src_name, _ch), []).extend(_proj.radar_keywords)
+                _RADAR_BY_CHAN.setdefault((_src_name, _ch), []).extend(
+                    (kw, _proj.name) for kw in _proj.radar_keywords
+                )
 
 # Freeze pacer channels into the sorted-list shape the rest of the wiring
 # (and the seeder) expects.
@@ -224,15 +229,36 @@ _PACER_CHANNELS = {src: sorted(chans) for src, chans in _PACER_CHANNELS.items()}
 # ── env secrets / overrides ────────────────────────────────────────────────────
 DB_PATH         = os.getenv("DB_PATH", "godwit_vane.db")
 MODEL_DIR       = os.getenv("MODEL_DIR", ".")
-APPRISE_URLS         = [u.strip() for u in os.getenv("APPRISE_URLS",         "").split(",") if u.strip()]
-APPRISE_URLS_SIGNALS = [u.strip() for u in os.getenv("APPRISE_URLS_SIGNALS", "").split(",") if u.strip()]
-APPRISE_URLS_RADAR   = [u.strip() for u in os.getenv("APPRISE_URLS_RADAR",   "").split(",") if u.strip()]
 
-# Resolved per-stream URL sets. Empty stream-specific lists fall back to
-# APPRISE_URLS, so an operator who only sets APPRISE_URLS keeps today's
-# single-destination behavior.
-_SIGNAL_URLS = APPRISE_URLS_SIGNALS or APPRISE_URLS
-_RADAR_URLS  = APPRISE_URLS_RADAR   or APPRISE_URLS
+# Per-project Apprise destinations live in each project's settings.json under
+# `notifier.signals_urls` / `notifier.radar_urls`. There is no env fallback —
+# every project must declare its own destinations.
+_SIGNAL_URLS_BY_PROJECT: dict[str, list[str]] = {}
+_RADAR_URLS_BY_PROJECT:  dict[str, list[str]] = {}
+_url_errors: list[str] = []
+for _proj_name, _proj in _PROJECTS.items():
+    _ncfg = _proj.settings.get("notifier", {}) or {}
+    _sig  = [u.strip() for u in _ncfg.get("signals_urls", []) if u and u.strip()]
+    _rad  = [u.strip() for u in _ncfg.get("radar_urls",   []) if u and u.strip()]
+    _SIGNAL_URLS_BY_PROJECT[_proj_name] = _sig
+    _RADAR_URLS_BY_PROJECT[_proj_name]  = _rad
+    if _proj.signals and not _sig:
+        _url_errors.append(
+            f"  - {_proj_name}: notifier.signals_urls is missing or empty "
+            f"(project has {len(_proj.signals)} signal(s) defined)")
+    if _proj.radar_keywords and not _rad:
+        _url_errors.append(
+            f"  - {_proj_name}: notifier.radar_urls is missing or empty "
+            f"(project has {len(_proj.radar_keywords)} radar keyword(s))")
+if _url_errors:
+    raise RuntimeError(
+        "Apprise destinations missing in project settings.json:\n"
+        + "\n".join(_url_errors)
+        + "\n\nEach project must define non-empty arrays in its "
+          "settings.json `notifier` block. Example:\n"
+          '  "notifier": { "signals_urls": ["discord://..."], '
+          '"radar_urls": ["discord://..."] }'
+    )
 
 BRAVE_SEED_ENABLED        = os.getenv("BRAVE_SEED_ENABLED", "false").lower() == "true"
 BRAVE_SEARCH_API_KEY      = os.getenv("BRAVE_SEARCH_API_KEY", "")
@@ -422,7 +448,8 @@ def _build_apprise_notifier_for_destination(urls: list[str], title: str) -> Appr
 
 
 # Trend reports follow the signal route: trends are an aggregate over post
-# traffic, not a brand-mention stream.
+# traffic, not a brand-mention stream. One report per project, dispatched to
+# that project's signal destinations.
 _project_channels: dict[str, frozenset[str]] = {
     proj_name: frozenset(
         ch
@@ -431,12 +458,18 @@ _project_channels: dict[str, frozenset[str]] = {
     )
     for proj_name, proj in _PROJECTS.items()
 }
+_trend_notifiers = {
+    proj_name: _build_apprise_notifier_for_destination(
+        _SIGNAL_URLS_BY_PROJECT[proj_name], f"Godwit Vane ({proj_name})"
+    )
+    for proj_name in _PROJECTS
+}
 TRENDS = TrendAnalyzer(
     store=STORE,
-    notifier=_build_apprise_notifier_for_destination(_SIGNAL_URLS, "Godwit Vane"),
+    notifiers_by_project=_trend_notifiers,
     logger=LOG,
     labeller=LABELLER,
-    project_channels=_project_channels or None,
+    project_channels=_project_channels,
 )
 
 HARVESTER = Harvester(
@@ -459,8 +492,8 @@ SIFTER = Sifter(
 NOTIFIER_WORKER = NotifierWorker(
     queue=NOTIFS,
     notifier_factory=_build_apprise_notifier_for_destination,
-    signal_urls=_SIGNAL_URLS,
-    radar_urls=_RADAR_URLS,
+    signal_urls_by_project=_SIGNAL_URLS_BY_PROJECT,
+    radar_urls_by_project=_RADAR_URLS_BY_PROJECT,
     signals_fn=SIGNAL_CFG.load,
     logger=LOG,
     max_batch=NOTIFIER_CFG.get("max_batch", 20),

@@ -149,7 +149,6 @@ cp .env.example .env
 Open `.env` and set at minimum:
 
 ```ini
-APPRISE_URLS=discord://123456789012345678/AbCdEf...xyz
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=qwen2.5:7b
 LABELLER=ollama
@@ -158,9 +157,8 @@ REDDIT_USER_AGENT=Godwit-Vane/1.0 (by u/your_reddit_handle)
 
 Notes:
 
-- **`APPRISE_URLS`** is comma-separated. The Python `apprise` library
-  inside Core talks to Discord directly via `discord://…` — no HTTP
-  gateway to run.
+- **Apprise destinations** live per-project in
+  `src/signals/<project>/settings.json` (see step 7), not in `.env`.
 - **`REDDIT_USER_AGENT`** should identify you; Reddit rate-limits generic
   anonymous UAs harder.
 - Leave `DB_PATH`, `MODEL_DIR`, `REDDIT_QPS`, `REDDIT_BURST` at defaults.
@@ -242,6 +240,30 @@ default watches a generic DevOps/AWS/selfhosted mix:
 Add or remove subreddit names (no `r/` prefix). Per-subreddit pre-filter
 rules live under `per_channel`.
 
+The same `settings.json` is also where you declare notification
+destinations for this project. Add them under the `notifier` block as
+JSON arrays of Apprise URLs:
+
+```json
+"notifier": {
+  "max_batch": 20,
+  "batch_timeout_seconds": 300,
+  "signals_urls": ["discord://123456789012345678/AbCdEf...xyz"],
+  "radar_urls":   ["discord://987654321098765432/ZyXwVu...abc"]
+}
+```
+
+- **`signals_urls`** — receives market-signal digests and trend reports
+  for this project. Required if the project has any signal `.json` files.
+- **`radar_urls`** — receives radar (brand/product mention) digests for
+  this project. Required if the project has a non-empty `radar.json`.
+- Each list is an array; identical lists across projects/streams
+  collapse into one combined send, distinct lists split into independent
+  sends with isolated retry.
+- Empty or missing arrays cause startup to fail fast — there is no env
+  fallback. Fill them per project, or remove the corresponding
+  signal/radar definitions if you do not want notifications.
+
 ---
 
 ## 8. Run Core
@@ -289,7 +311,8 @@ If nothing arrives after ~10 minutes:
   `curl http://localhost:11434/api/tags` from the same shell.
 - **Harvester logs but no Sifter hits** → expected on quiet subreddits;
   wait a full cycle or add a busier one.
-- **Sifter says YES but no Discord message** → `APPRISE_URLS` is wrong.
+- **Sifter says YES but no Discord message** → the URL in the
+  project's `notifier.signals_urls` (or `radar_urls`) is wrong.
   Test it in isolation:
 
   ```bash
@@ -306,8 +329,9 @@ If nothing arrives after ~10 minutes:
 - **Tighten noise** — add `per_channel` pre-filter rules (`min_score`,
   `max_age_hours`, `author_excludes`, flair rules) in
   `settings.json`. Excluded items never reach the LLM.
-- **More notification targets** — append more Apprise URLs to
-  `APPRISE_URLS` (comma-separated). Full catalogue:
+- **More notification targets** — append more Apprise URLs to a
+  project's `notifier.signals_urls` / `notifier.radar_urls` arrays in
+  `src/signals/<project>/settings.json`. Full catalogue:
   <https://github.com/caronc/apprise/wiki>.
 - **Trend report** — daily digest fires at `trend_report_time`
   (default `09:00`, host time). Change it in `settings.json`.

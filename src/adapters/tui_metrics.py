@@ -12,6 +12,8 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
+from adapters import heartbeat
+
 
 # In-memory state updated by monitor.py around each Pacer tick.
 LAST_TICK: float = 0.0
@@ -217,14 +219,8 @@ class TuiMetrics:
     def adapters(self) -> list[AdapterHealth]:
         out: list[AdapterHealth] = []
 
-        # ollama / anthropic — v1 has no heartbeat table, so report
-        # `unknown` until log-line scraping or a heartbeat row exists.
-        out.append(AdapterHealth(name="ollama",
-                                 state="unknown",
-                                 detail="no heartbeat (v1)"))
-        out.append(AdapterHealth(name="anthropic",
-                                 state="unknown",
-                                 detail="no heartbeat (v1)"))
+        out.append(_labeller_health("ollama"))
+        out.append(_labeller_health("anthropic"))
 
         # apprise — last successful notification timestamp.
         row = self._conn.execute(
@@ -486,6 +482,18 @@ class TuiMetrics:
 
 
 # ── module helpers ────────────────────────────────────────────────────────
+def _labeller_health(name: str) -> AdapterHealth:
+    st = heartbeat.get(name)
+    if st is None:
+        return AdapterHealth(name=name, state="unknown", detail="no calls yet")
+    ago = int(time.time() - st.at)
+    if st.ok:
+        return AdapterHealth(name=name, state="up",
+                             detail=f"last ok {_format_ago(ago)} ago")
+    return AdapterHealth(name=name, state="down",
+                         detail=f"error {_format_ago(ago)} ago: {st.detail}")
+
+
 def _safe_filesize(path: str) -> int:
     try:
         return os.path.getsize(path)
