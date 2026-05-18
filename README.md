@@ -15,6 +15,8 @@ notifications through Apprise.
 
 **License:** [AGPL-3.0](LICENSE).
 
+![Godwit Vane dashboard](images/dashboard.png)
+
 ## What it does
 
 - **Signals as JSON.** Drop a JSON file into a project subfolder under
