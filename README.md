@@ -51,7 +51,7 @@ notifications through Apprise.
 Godwit Core has no servers. All data stays on your infrastructure.
 
 ```
-Reddit API ──▶ Core (your host, your config) ──▶ your local SQLite
+Reddit (public RSS / JSON) ──▶ Core (your host, your config) ──▶ your local SQLite
 ```
 
 Core connects to Reddit using Reddit's public RSS / JSON endpoints — no
@@ -113,7 +113,7 @@ Skips the Harvester entirely, re-queues every previously-fetched post/comment
 in the DB, and runs it back through the Sifter with the current signals,
 prompts, and model. Intended for tuning runs — swap `OLLAMA_MODEL`, edit a
 signal's `*_prompt`, or tweak keywords, then re-run against the same corpus
-without burning any Reddit API calls.
+without re-fetching anything from Reddit.
 
 Reset wipes cached classification state so the new configuration actually
 gets exercised: Bayes pickles, LLM-sourced training samples, the `seen`
