@@ -4,6 +4,7 @@ Each test pins one observable behaviour. Fakes only — no SQLite, no
 Ollama, no real signal JSON. Mirrors the seam style of
 `tests/workers/test_notifier_split.py`.
 """
+import random
 from dataclasses import dataclass, field
 
 from core.models import Post
@@ -90,7 +91,12 @@ def _post(pid: str = "p1") -> Post:
 
 def _learner(*, bayes: FakeBayes, labeller: ScriptedLabeller,
              store: FakeClassificationStore | None = None,
-             retrain_every: int = 50) -> ActiveLearner:
+             retrain_every: int = 50,
+             exploration_rate: float = 0.0,
+             rng: "random.Random | None" = None) -> ActiveLearner:
+    # Default exploration_rate=0.0 so tests targeting cascade/bayes-band
+    # behaviour are deterministic. Tests that exercise exploration override
+    # the rate explicitly.
     return ActiveLearner(
         signal_name="pain",
         kind="post",
@@ -99,6 +105,8 @@ def _learner(*, bayes: FakeBayes, labeller: ScriptedLabeller,
         classification_store=store or FakeClassificationStore(),
         logger=_SilentLogger(),
         retrain_every=retrain_every,
+        exploration_rate=exploration_rate,
+        rng=rng,
     )
 
 
@@ -114,7 +122,7 @@ def test_cascade_both_yes_two_calls_decided_by_llm():
 
     result = learner.classify(_post(), _GATES, content_id=7)
 
-    assert result == (True, "llm", None)
+    assert result == (True, "llm", 1.0)
     assert [c[1] for c in llm.calls] == ["DOMAIN-PROMPT", "INTENT-PROMPT"]
     assert len(store.saves) == 1
     assert store.saves[0].decided_by == "llm"
@@ -160,14 +168,14 @@ def test_cascade_domain_abstain_returns_none_no_save():
     llm   = ScriptedLabeller([None])
     store = FakeClassificationStore(training=[("t", "b", 1), ("t", "b", 0)])
     learner = _learner(bayes=bayes, labeller=llm, store=store)
-    before_counter = learner._since_retrain
+    before_counter = learner._hits_since_retrain
 
     result = learner.classify(_post(), _GATES, content_id=17)
 
     assert result is None
     assert len(llm.calls) == 1
     assert store.saves == []
-    assert learner._since_retrain == before_counter
+    assert learner._hits_since_retrain == before_counter
 
 
 # ── 5. Cascade — intent abstain ─────────────────────────────────────────────
@@ -176,14 +184,14 @@ def test_cascade_intent_abstain_returns_none_no_save():
     llm   = ScriptedLabeller([True, None])
     store = FakeClassificationStore(training=[("t", "b", 1), ("t", "b", 0)])
     learner = _learner(bayes=bayes, labeller=llm, store=store)
-    before_counter = learner._since_retrain
+    before_counter = learner._hits_since_retrain
 
     result = learner.classify(_post(), _GATES, content_id=19)
 
     assert result is None
     assert len(llm.calls) == 2
     assert store.saves == []
-    assert learner._since_retrain == before_counter
+    assert learner._hits_since_retrain == before_counter
 
 
 # ── 6. Bayes confident YES short-circuits before any gate ───────────────────
@@ -224,22 +232,22 @@ def test_retrain_counter_increments_once_per_cascade():
     llm   = ScriptedLabeller([True, True])  # cascade, both YES
     store = FakeClassificationStore(training=[("t", "b", 1), ("t", "b", 0)])
     learner = _learner(bayes=bayes, labeller=llm, store=store, retrain_every=50)
-    before = learner._since_retrain
+    before = learner._hits_since_retrain
 
     learner.classify(_post("p1"), _GATES, content_id=1)
-    after_yes = learner._since_retrain
+    after_yes = learner._hits_since_retrain
 
     # New scripted labeller: domain-NO short-circuit
     llm2 = ScriptedLabeller([False])
     learner._llm = llm2
     learner.classify(_post("p2"), _GATES, content_id=2)
-    after_dom_no = learner._since_retrain
+    after_dom_no = learner._hits_since_retrain
 
     # New scripted labeller: intent-NO
     llm3 = ScriptedLabeller([True, False])
     learner._llm = llm3
     learner.classify(_post("p3"), _GATES, content_id=3)
-    after_int_no = learner._since_retrain
+    after_int_no = learner._hits_since_retrain
 
     assert after_yes      == before + 1
     assert after_dom_no   == before + 2
@@ -253,11 +261,11 @@ def test_retrain_does_not_run_on_abstain():
     llm   = ScriptedLabeller([None])
     store = FakeClassificationStore(training=[("t", "b", 1), ("t", "b", 0)])
     learner = _learner(bayes=bayes, labeller=llm, store=store, retrain_every=1)
-    before = learner._since_retrain
+    before = learner._hits_since_retrain
 
     learner.classify(_post(), _GATES, content_id=31)
 
-    assert learner._since_retrain == before
+    assert learner._hits_since_retrain == before
     assert bayes.train_calls == []
 
 
@@ -288,3 +296,120 @@ def test_slow_labeller_double_latency_worst_case():
     assert counter["n"] == 2
     assert order[0] == (1, "DOMAIN-PROMPT")
     assert order[1] == (2, "INTENT-PROMPT")
+
+
+# ── 11. Exploration forces LLM on bayes-confident YES ───────────────────────
+def test_exploration_forces_llm_on_confident_yes():
+    """When the rng draws below exploration_rate, a bayes-confident YES is
+    still escalated to the LLM cascade — that's what keeps fresh
+    llm-labelled rows entering the training corpus when bayes has
+    converged on a wrong region of input space."""
+    bayes = FakeBayes(prediction=0.95, has_model=True)
+    llm   = ScriptedLabeller([True, True])  # cascade both YES
+    store = FakeClassificationStore(training=[("t", "b", 1), ("t", "b", 0)])
+    learner = _learner(bayes=bayes, labeller=llm, store=store,
+                       exploration_rate=1.0)  # always explore
+
+    result = learner.classify(_post(), _GATES, content_id=41)
+
+    assert result == (True, "llm", 1.0)
+    assert len(llm.calls) == 2
+    assert len(store.saves) == 1
+    assert store.saves[0].decided_by == "llm"
+
+
+# ── 12. Exploration forces LLM on bayes-confident NO ────────────────────────
+def test_exploration_forces_llm_on_confident_no():
+    """The death-spiral case: bayes confidently says NO but the row is
+    actually relevant. Exploration sends it to the LLM cascade so the
+    correct YES label lands in the training set."""
+    bayes = FakeBayes(prediction=0.05, has_model=True)
+    llm   = ScriptedLabeller([True, True])  # LLM disagrees: actually YES
+    store = FakeClassificationStore(training=[("t", "b", 1), ("t", "b", 0)])
+    learner = _learner(bayes=bayes, labeller=llm, store=store,
+                       exploration_rate=1.0)
+
+    result = learner.classify(_post(), _GATES, content_id=43)
+
+    assert result == (True, "llm", 1.0)
+    assert len(llm.calls) == 2
+    assert store.saves[0].decided_by == "llm"
+
+
+# ── 13. Zero exploration = legacy behaviour for confident bayes ─────────────
+def test_zero_exploration_keeps_legacy_bayes_short_circuit():
+    """With exploration_rate=0.0, confident-bayes rows must never touch
+    the LLM — preserves the cost properties of the bayes gate."""
+    bayes = FakeBayes(prediction=0.9, has_model=True)
+    llm   = ScriptedLabeller([])  # would raise if consulted
+    store = FakeClassificationStore()
+    # Deterministic rng that would explore if rate were non-zero
+    learner = _learner(bayes=bayes, labeller=llm, store=store,
+                       exploration_rate=0.0, rng=random.Random(0))
+
+    result = learner.classify(_post(), _GATES, content_id=47)
+
+    assert result == (True, "bayes", 0.9)
+    assert llm.calls == []
+
+
+# ── 14. Bayes-decided saves advance the retrain counter ─────────────────────
+def test_bayes_decided_advances_retrain_counter():
+    """The death-spiral fix: counter advances on every reached decision,
+    not only on LLM cascade. Otherwise a fully bayes-decided stream
+    leaves _hits_since_retrain pinned at zero and retraining never fires."""
+    bayes = FakeBayes(prediction=0.1, has_model=True)  # confident NO
+    llm   = ScriptedLabeller([])
+    store = FakeClassificationStore(training=[("t", "b", 1), ("t", "b", 0)])
+    learner = _learner(bayes=bayes, labeller=llm, store=store,
+                       retrain_every=50)
+
+    for i in range(3):
+        learner.classify(_post(f"p{i}"), _GATES, content_id=100 + i)
+
+    assert learner._hits_since_retrain == 3
+    assert all(s.decided_by == "bayes" for s in store.saves)
+
+
+# ── 15. Retrain fires after N bayes-decided rows when data permits ──────────
+def test_retrain_fires_after_n_bayes_hits():
+    """Once retrain_every is reached, retrain runs on whatever training
+    data exists — even if every hit in the window was bayes-decided. The
+    refit is on unchanged data (a no-op for outcomes); we're pinning that
+    the trigger fires so any new llm row that DOES arrive lands in a
+    re-fit model promptly."""
+    bayes = FakeBayes(prediction=0.1, has_model=True)
+    llm   = ScriptedLabeller([])
+    # Training data already has both classes, so can_fit is True.
+    store = FakeClassificationStore(training=[("t", "b", 1), ("t", "b", 0)])
+    learner = _learner(bayes=bayes, labeller=llm, store=store,
+                       retrain_every=3)
+
+    for i in range(3):
+        learner.classify(_post(f"p{i}"), _GATES, content_id=200 + i)
+
+    assert len(bayes.train_calls) == 1
+    assert learner._hits_since_retrain == 0  # reset on successful retrain
+
+
+# ── 16. Retrain skipped when only one class is present in training ──────────
+def test_retrain_skipped_when_cannot_fit():
+    """can_fit requires both classes in the LLM-labelled corpus.
+    Negative-only seed → no retrain even when cadence hits, otherwise
+    BayesModel.train would log-and-skip and the counter would reset on a
+    no-op."""
+    bayes = FakeBayes(prediction=0.1, has_model=True)
+    llm   = ScriptedLabeller([])
+    # Only negative training rows seeded
+    store = FakeClassificationStore(training=[("t", "b", 0), ("t", "b", 0)])
+    learner = _learner(bayes=bayes, labeller=llm, store=store,
+                       retrain_every=2)
+
+    learner.classify(_post("a"), _GATES, content_id=301)
+    learner.classify(_post("b"), _GATES, content_id=302)
+
+    assert bayes.train_calls == []
+    # Counter keeps growing because retrain never ran — once a YES
+    # label arrives via exploration or the uncertain band, the next
+    # _after_decision will trigger the deferred retrain immediately.
+    assert learner._hits_since_retrain == 2
