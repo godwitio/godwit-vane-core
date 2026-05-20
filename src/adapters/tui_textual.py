@@ -172,7 +172,12 @@ class SignalsWidget(_Card):
         # The right column on wide layouts is ~30-35% wide, so signal
         # names compete for space with the counts. Truncate aggressively
         # rather than letting names overflow into the next column.
-        lines = []
+        # Header widths must match the row format below exactly so the
+        # column labels line up over their values.
+        lines = [
+            f"  [dim]{'project':<10} {'signal':<22} {'24h':>4}  "
+            f"{'pos/neg':<8}  model[/dim]"
+        ]
         for r in rows:
             model    = "trained" if r.has_model else "none"
             project  = _trunc(r.project or "-", 10)
@@ -222,7 +227,9 @@ class AdaptersWidget(_Card):
         if not rows:
             super().update("(no adapters)")
             return
-        lines = []
+        # Header aligned with the row format: name<10, 1-char status mark,
+        # then free-text detail. The mark glyph column is self-evident.
+        lines = [f"  [dim]{'adapter':<10}   detail[/dim]"]
         for r in rows:
             mark   = {"up": "*", "down": "x", "degraded": "!", "unknown": "?"}.get(r.state, "?")
             detail = _trunc(r.detail, 40)
@@ -249,7 +256,10 @@ class MatchesWidget(_Card):
         if not rows:
             super().update("(no matches yet)")
             return
-        lines = []
+        # Header widths match the row format below.
+        lines = [
+            f"  [dim]{'time':<5}  {'signal':<8} {'channel':<16} conf[/dim]"
+        ]
         for r in rows:
             channel = _trunc(r.channel, 16)
             sig     = _trunc(r.signal, 8)
