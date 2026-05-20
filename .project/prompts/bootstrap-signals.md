@@ -132,6 +132,33 @@ The positive gate described above is the **domain gate** in the
 two-gate cascade. The intent clause runs as a separate, narrower
 prompt; it does not repeat the `<CATEGORY>` text or enumerate anchors.
 
+### Language-scoped signals
+
+If a signal set targets a specific language community — e.g. a
+Portuguese variant (`*-pt.json`) watching Portuguese-speaking subreddits
+— the **domain gate must require the content be written in that
+language**. Add the requirement to the positive gate, not as a separate
+question:
+
+> "Responde SIM apenas se o post estiver escrito em português E for
+> sobre `<CATEGORY>`. Se estiver noutra língua (por exemplo inglês),
+> responde NÃO."
+
+Why this is mandatory and not optional polish: most anchors are
+**language-neutral** — product names (`Zapier`, `n8n`, `Make.com`),
+loanwords (`bot`, `chatbot`), and acronyms (`AI` / `IA`) match
+foreign-language text just as well as native text. An English post
+containing "bot" sails through the keyword pre-filter, and a domain gate
+written *in* Portuguese but that doesn't *require* Portuguese will still
+answer SIM, because the small model reads the English content fine and
+sees a valid `<CATEGORY>` match. The result is a localized signal
+flooded with foreign-language junk. The language clause is the only
+thing that fences it out; keyword removal can't, because native posts
+use the same neutral anchors. Write the language requirement and the
+fallback ("if in another language, answer NO") in the **target
+language**, and apply it to both `domain_post_prompt` and
+`domain_comment_prompt`. The intent gate stays unchanged.
+
 ## Step 1 — gather inputs
 
 Expect me to paste a landing-page URL (and optionally docs / changelog /
@@ -329,6 +356,12 @@ and wait for a new **yes** before producing downloads.
 - The `intent_*` prompts ask the intent question alone (pain /
   migration / comparison). No `<CATEGORY>` repetition, no anchor
   enumeration — those belong to the domain gate.
+- For **language-scoped signal sets** (e.g. `*-pt.json` watching a
+  non-English community), the `domain_*` prompts must require the
+  content be written in the target language ("answer NO if in another
+  language"), written in that language. Anchors are language-neutral, so
+  without this clause the gate floods with foreign-language junk. See
+  "Language-scoped signals" above.
 - Keep `{title}` and `{body}` verbatim — Core formats them at runtime.
 - Keep prompts declarative. No "step 1 / step 2", no "think carefully",
   no chain-of-thought preamble — the runtime model has a 10-token output
