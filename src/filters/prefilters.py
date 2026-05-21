@@ -2,6 +2,21 @@ import time
 from dataclasses import dataclass, field
 from core.models import Post
 
+# Authors whose content is structurally non-user-generated: the universal
+# moderation bot, and the placeholders Reddit substitutes for deleted/removed
+# accounts. Their text is never genuine intent, yet AutoModerator boilerplate
+# ("I am a bot", "filtrado pelo Automod") carries automation/bot vocabulary
+# that trips both the keyword gate and small-LLM classifiers. This is a small,
+# closed set of non-content authors — NOT an open-ended bot blocklist (that
+# would be the same losing game as enumerating off-domain topics). Filtered
+# globally, before radar and before any per-channel config. Compared lowercase
+# against post.author.
+DEFAULT_AUTHOR_EXCLUDES = (
+    "automoderator",
+    "[deleted]",
+    "[removed]",
+)
+
 
 @dataclass
 class ChannelPreFilterConfig:
@@ -20,6 +35,14 @@ class PreFilter:
 
     def __init__(self, channel_configs: dict[str, ChannelPreFilterConfig]):
         self._cfgs = channel_configs
+
+    def is_automated_author(self, post: Post) -> bool:
+        """True for structural non-content authors (mod bot, deleted/removed).
+
+        Channel-independent, so the sifter can drop these before radar and
+        classification alike — they are noise for every signal and for trends.
+        """
+        return (post.author or "").lower() in DEFAULT_AUTHOR_EXCLUDES
 
     def allow(self, post: Post) -> tuple[bool, str]:
         key = f"{post.source}:{post.channel}"
@@ -45,6 +68,8 @@ class PreFilter:
         if cfg.flair_contains and not any(f.lower() in flair for f in cfg.flair_contains):
             return False, "flair_contains"
 
+        if self.is_automated_author(post):
+            return False, "automated_author"
         author = (post.author or "").lower()
         if cfg.author_excludes and author in [a.lower() for a in cfg.author_excludes]:
             return False, "author_excludes"

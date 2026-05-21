@@ -26,6 +26,9 @@ class _NullRouter:
 
 
 class _NullPreFilter:
+    def is_automated_author(self, post: Post) -> bool:
+        return False
+
     def allow(self, post: Post):
         return True, ""
 

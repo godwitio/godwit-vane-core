@@ -50,6 +50,14 @@ class Sifter:
             return False
         content_id, post = claimed
         try:
+            # Bot/deleted authors are structural noise: drop them before radar,
+            # trends, and classification so AutoModerator boilerplate can't hit
+            # any of them.
+            if self._prefilter.is_automated_author(post):
+                self._log.debug(f"[prefilter] reject {post.source}:{post.id} reason=automated_author")
+                self._content.complete(content_id)
+                return True
+
             self._trend_analyzer.record_post(post)
 
             for radar_hit in self._check_radar(post):
