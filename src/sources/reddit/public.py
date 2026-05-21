@@ -75,7 +75,7 @@ class PublicRedditSource(ContentSource):
         if not post.body:
             post.body = selftext or post.body
         if not post.author:
-            post.author = listing.get("author", "") or post.author
+            post.author = _strip_user_prefix(listing.get("author", "")) or post.author
         if not post.url:
             permalink = listing.get("permalink", "")
             if permalink:
@@ -118,7 +118,7 @@ class PublicRedditSource(ContentSource):
                 kind="comment",
                 title="",
                 body=d.get("body", ""),
-                author=(d.get("author") or ""),
+                author=_strip_user_prefix(d.get("author") or ""),
                 url=f"https://reddit.com{d.get('permalink','')}",
                 created_at=float(d.get("created_utc") or 0),
                 score=d.get("score"),
@@ -175,7 +175,12 @@ class PublicRedditSource(ContentSource):
             pid = (entry.findtext("atom:id", default="", namespaces=ns) or "").split("_")[-1]
             if not pid: continue
             title  = entry.findtext("atom:title",   default="", namespaces=ns) or ""
-            author = entry.findtext("atom:author/atom:name", default="", namespaces=ns) or ""
+            # The Atom feed renders authors as "/u/name"; the JSON comment path
+            # gives the bare name. Normalize to bare here so a single format
+            # reaches the store — author_excludes / the structural-author filter
+            # compare bare names and would otherwise miss "/u/AutoModerator".
+            author = _strip_user_prefix(
+                entry.findtext("atom:author/atom:name", default="", namespaces=ns) or "")
             link_el = entry.find("atom:link", ns)
             url = link_el.attrib.get("href", "") if link_el is not None else ""
             published = entry.findtext("atom:published", default="", namespaces=ns) or ""
@@ -197,3 +202,13 @@ def _strip_html(text: str) -> str:
     import re, html
     text = re.sub(r"<[^>]+>", "", text)
     return html.unescape(text).strip()
+
+
+def _strip_user_prefix(author: str) -> str:
+    a = author.strip()
+    low = a.lower()
+    if low.startswith("/u/"):
+        return a[3:]
+    if low.startswith("u/"):
+        return a[2:]
+    return a

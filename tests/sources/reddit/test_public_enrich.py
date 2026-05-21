@@ -112,3 +112,59 @@ def test_empty_response_returns_stub():
         out = src.enrich(stub)
     assert out is stub
     assert out.title == "keep"
+
+
+def _atom(author: str) -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <id>t3_abc123</id>
+        <title>a post</title>
+        <author><name>{author}</name></author>
+        <link href="https://reddit.com/r/portugal/comments/abc123/a_post/"/>
+        <published>2026-05-21T09:00:00+00:00</published>
+        <content>body text</content>
+      </entry>
+    </feed>"""
+
+
+def test_rss_author_prefix_stripped_to_match_comment_format():
+    # Reddit's Atom feed renders authors as "/u/name"; the JSON comment path
+    # yields the bare name. They must reach the store in one format, or the
+    # structural-author filter and author_excludes (which compare bare names)
+    # miss "/u/AutoModerator" posts.
+    src = _mk_source()
+    posts = src._parse_rss(_atom("/u/AutoModerator"), channel="portugal", limit=10)
+    assert posts[0].author == "AutoModerator"
+
+
+def test_rss_author_without_prefix_unchanged():
+    src = _mk_source()
+    posts = src._parse_rss(_atom("alice"), channel="portugal", limit=10)
+    assert posts[0].author == "alice"
+
+
+def _comments_json(author: str) -> str:
+    comment = {"id": "c1", "body": "a comment", "author": author,
+               "permalink": "/r/portugal/comments/abc123/x/c1/",
+               "created_utc": 1700000000.0, "score": 3}
+    return json.dumps([{}, {"data": {"children": [{"kind": "t1", "data": comment}]}}])
+
+
+def test_comment_author_prefix_stripped():
+    # The JSON path is normally bare, but normalize defensively so every
+    # author-bearing path stores one format.
+    src = _mk_source()
+    parent = Post(id="abc123", source="reddit", channel="portugal")
+    with patch.object(src, "_get", return_value=(_comments_json("/u/AutoModerator"), False)):
+        out = src.comments(parent, limit=10)
+    assert out[0].author == "AutoModerator"
+
+
+def test_enrich_author_prefix_stripped():
+    src = _mk_source()
+    stub = Post(id="abc123", source="reddit", channel="portugal")
+    with patch.object(src, "_get",
+                      return_value=(_json_text(_listing(author="/u/AutoModerator")), False)):
+        out = src.enrich(stub)
+    assert out.author == "AutoModerator"
