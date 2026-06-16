@@ -1,7 +1,9 @@
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from email.utils import parsedate_to_datetime
+from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
 import requests
@@ -14,14 +16,27 @@ from sources.errors import PermanentError, RetryableError
 @dataclass
 class PublicRedditConfig:
     user_agent:  str = "Godwit-Vane/1.0"
-    qps:         float = 0.15   # ~10 QPM
-    burst:       int   = 3
+    # Anonymous RSS is throttled to ~1 req/min (2026-06). A per-account feed
+    # token (rss_feed_*) lifts that back to ~100 req/10min — raise qps/burst
+    # accordingly when one is supplied.
+    qps:         float = 0.015  # ~1 QPM (anonymous throttle)
+    burst:       int   = 1
     request_timeout: float = 20.0
+    # Optional browser RSS feed token from reddit.com/prefs/feeds — the feed
+    # links there carry ?feed=<token>&user=<name>. Both must be set to take
+    # effect. Read-only; injected from .env, never from settings.json.
+    rss_feed_user:  str = ""
+    rss_feed_token: str = ""
 
 
 _RSS_URL  = "https://www.reddit.com/r/{channel}/new/.rss"
 _JSON_URL = "https://www.reddit.com/comments/{id}.json"
 _CHAN_JSON_URL = "https://www.reddit.com/r/{channel}/new.json"
+# Per-post comment feed. Reddit shut down unauthenticated .json access
+# (2026-06), so comments come from this Atom feed — same format discover()
+# parses. The subreddit must be in the path; the bare /comments/{id}/.rss
+# form is rejected.
+_COMMENTS_RSS_URL = "https://www.reddit.com/r/{channel}/comments/{id}/.rss"
 
 
 class PublicRedditSource(ContentSource):
@@ -48,7 +63,7 @@ class PublicRedditSource(ContentSource):
         return RateLimitConfig(qps=self._cfg.qps, burst=self._cfg.burst)
 
     def discover(self, channel: str, limit: int) -> list[Post]:
-        url = _RSS_URL.format(channel=channel)
+        url = self._feed_url(_RSS_URL.format(channel=channel))
         text, not_modified = self._get(url)
         if not_modified or not text:
             return []
@@ -94,37 +109,69 @@ class PublicRedditSource(ContentSource):
         return post
 
     def comments(self, post: Post, limit: int) -> list[Post]:
-        import json
-        url = _JSON_URL.format(id=post.id)
-        text, _ = self._get(url, cache=False)
-        if not text:
+        # Atom comment feed (see _COMMENTS_RSS_URL). Yields the most-recent
+        # comments only (~25, not the full tree) and carries no score — the
+        # Atom format has no such field, so comment.score stays None.
+        if not post.channel:
             return []
-        data = json.loads(text)
-        try:
-            children = data[1]["data"]["children"]
-        except (IndexError, KeyError, TypeError):
+        url = self._feed_url(_COMMENTS_RSS_URL.format(channel=post.channel, id=post.id))
+        text, not_modified = self._get(url)
+        if not_modified or not text:
             return []
+        return self._parse_comments_rss(text, post, limit)
+
+    def _parse_comments_rss(self, text: str, post: Post, limit: int) -> list[Post]:
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        root = ET.fromstring(text)
         results: list[Post] = []
-        for c in children[:limit]:
-            if c.get("kind") != "t1":
+        for entry in root.findall("atom:entry", ns):
+            # Comment entries are tagged t1_; the submission itself is the
+            # leading t3_ entry and is skipped (already stored via discover).
+            eid = entry.findtext("atom:id", default="", namespaces=ns) or ""
+            if not eid.startswith("t1_"):
                 continue
-            d = c.get("data", {})
-            if not d.get("body"):
+            cid = eid[3:]
+            if not cid:
                 continue
+            body = _strip_html(
+                entry.findtext("atom:content", default="", namespaces=ns) or "")
+            if not body:
+                continue
+            link_el = entry.find("atom:link", ns)
+            url = link_el.attrib.get("href", "") if link_el is not None else ""
+            # Reddit leaves <published> empty on comment entries; fall back to
+            # <updated>. A missing/unparseable date yields 0.0, which the age
+            # pre-filter treats as "unknown" and skips.
+            created = _parse_atom_date(
+                entry.findtext("atom:published", default="", namespaces=ns)
+                or entry.findtext("atom:updated", default="", namespaces=ns) or "")
             results.append(Post(
-                id=d.get("id", ""),
+                id=cid,
                 source="reddit",
                 channel=post.channel,
                 kind="comment",
                 title="",
-                body=d.get("body", ""),
-                author=_strip_user_prefix(d.get("author") or ""),
-                url=f"https://reddit.com{d.get('permalink','')}",
-                created_at=float(d.get("created_utc") or 0),
-                score=d.get("score"),
+                body=body,
+                author=_strip_user_prefix(
+                    entry.findtext("atom:author/atom:name", default="", namespaces=ns) or ""),
+                url=url,
+                created_at=created,
+                score=None,
                 parent_title=post.title,
             ))
+            if len(results) >= limit:
+                break
         return results
+
+    def _feed_url(self, url: str) -> str:
+        """Append the per-account RSS feed token when configured. Reddit's
+        prefs/feeds tokens (?feed=<token>&user=<name>) lift the anonymous-RSS
+        throttle; without both values the URL is returned unchanged."""
+        tok, user = self._cfg.rss_feed_token, self._cfg.rss_feed_user
+        if not (tok and user):
+            return url
+        sep = "&" if "?" in url else "?"
+        return f"{url}{sep}feed={quote(tok, safe='')}&user={quote(user, safe='')}"
 
     def _get(self, url: str, cache: bool = True) -> tuple[str, bool]:
         headers = {}
@@ -196,6 +243,17 @@ class PublicRedditSource(ContentSource):
                 created_at=created,
             ))
         return posts
+
+
+def _parse_atom_date(value: str) -> float:
+    """Atom timestamps are ISO-8601 (RFC 3339); return a POSIX float, or 0.0
+    when missing/unparseable. 0.0 is treated downstream as 'unknown'."""
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def _strip_html(text: str) -> str:

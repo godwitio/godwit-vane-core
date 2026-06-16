@@ -144,21 +144,116 @@ def test_rss_author_without_prefix_unchanged():
     assert posts[0].author == "alice"
 
 
-def _comments_json(author: str) -> str:
-    comment = {"id": "c1", "body": "a comment", "author": author,
-               "permalink": "/r/portugal/comments/abc123/x/c1/",
-               "created_utc": 1700000000.0, "score": 3}
-    return json.dumps([{}, {"data": {"children": [{"kind": "t1", "data": comment}]}}])
+def _comments_atom(*comments: dict) -> str:
+    # The feed leads with the submission itself (a t3_ entry) followed by the
+    # comment (t1_) entries — mirrors Reddit's per-post comment Atom feed.
+    entries = ["""
+      <entry>
+        <id>t3_abc123</id>
+        <author><name>/u/op</name></author>
+        <link href="https://www.reddit.com/r/portugal/comments/abc123/a_post/"/>
+        <published>2026-05-21T09:00:00+00:00</published>
+        <content type="html">the original post body</content>
+      </entry>"""]
+    for c in comments:
+        entries.append(f"""
+      <entry>
+        <id>t1_{c['id']}</id>
+        <author><name>{c['author']}</name></author>
+        <link href="https://www.reddit.com/r/portugal/comments/abc123/a_post/{c['id']}/"/>
+        <content type="html">{c['body']}</content>
+      </entry>""")
+    return ('<?xml version="1.0" encoding="UTF-8"?>'
+            '<feed xmlns="http://www.w3.org/2005/Atom">'
+            + "".join(entries) + "</feed>")
 
 
 def test_comment_author_prefix_stripped():
-    # The JSON path is normally bare, but normalize defensively so every
-    # author-bearing path stores one format.
+    # The Atom feed renders authors as "/u/name"; normalize to bare so every
+    # author-bearing path stores one format (author_excludes compares bare).
     src = _mk_source()
     parent = Post(id="abc123", source="reddit", channel="portugal")
-    with patch.object(src, "_get", return_value=(_comments_json("/u/AutoModerator"), False)):
+    atom = _comments_atom({"id": "c1", "author": "/u/AutoModerator", "body": "a comment"})
+    with patch.object(src, "_get", return_value=(atom, False)):
         out = src.comments(parent, limit=10)
+    assert len(out) == 1
     assert out[0].author == "AutoModerator"
+
+
+def test_comments_skip_submission_entry_and_set_fields():
+    src = _mk_source()
+    parent = Post(id="abc123", source="reddit", channel="portugal", title="parent title")
+    atom = _comments_atom(
+        {"id": "c1", "author": "alice", "body": "first"},
+        {"id": "c2", "author": "/u/bob", "body": "second"},
+    )
+    with patch.object(src, "_get", return_value=(atom, False)):
+        out = src.comments(parent, limit=10)
+    # The leading t3_ submission entry is skipped; only the two t1_ comments remain.
+    assert [c.id for c in out] == ["c1", "c2"]
+    assert all(c.kind == "comment" for c in out)
+    assert out[0].body == "first"
+    assert out[0].score is None          # Atom feed has no score
+    assert out[0].created_at == 0.0      # comment entries carry no <published>
+    assert out[0].parent_title == "parent title"
+    assert out[1].author == "bob"
+    assert out[0].url.endswith("/c1/")
+
+
+def test_comments_respect_limit():
+    src = _mk_source()
+    parent = Post(id="abc123", source="reddit", channel="portugal")
+    atom = _comments_atom(*[{"id": f"c{i}", "author": "x", "body": f"b{i}"} for i in range(5)])
+    with patch.object(src, "_get", return_value=(atom, False)):
+        out = src.comments(parent, limit=2)
+    assert len(out) == 2
+
+
+def test_comments_not_modified_returns_empty():
+    src = _mk_source()
+    parent = Post(id="abc123", source="reddit", channel="portugal")
+    with patch.object(src, "_get", return_value=("", True)):
+        assert src.comments(parent, limit=10) == []
+
+
+def test_comments_no_channel_returns_empty():
+    src = _mk_source()
+    parent = Post(id="abc123", source="reddit", channel="")
+    # No subreddit → cannot build the feed URL; bail without a request.
+    out = src.comments(parent, limit=10)
+    assert out == []
+
+
+def test_feed_url_unchanged_without_token():
+    src = _mk_source()  # no rss_feed_* configured
+    assert src._feed_url("https://www.reddit.com/r/x/.rss") == "https://www.reddit.com/r/x/.rss"
+
+
+def test_feed_url_appends_token_when_configured():
+    etag = MagicMock()
+    src = PublicRedditSource(
+        PublicRedditConfig(rss_feed_user="alice", rss_feed_token="abc 123"), etag_conn=etag)
+    # No query string yet → '?'; token/user are URL-encoded.
+    assert src._feed_url("https://www.reddit.com/r/x/.rss") == \
+        "https://www.reddit.com/r/x/.rss?feed=abc%20123&user=alice"
+
+
+def test_feed_url_requires_both_user_and_token():
+    etag = MagicMock()
+    src = PublicRedditSource(PublicRedditConfig(rss_feed_token="abc"), etag_conn=etag)  # user missing
+    assert src._feed_url("https://www.reddit.com/r/x/.rss") == "https://www.reddit.com/r/x/.rss"
+
+
+def test_comments_request_carries_token():
+    etag = MagicMock()
+    src = PublicRedditSource(
+        PublicRedditConfig(rss_feed_user="alice", rss_feed_token="tok"), etag_conn=etag)
+    parent = Post(id="abc123", source="reddit", channel="portugal")
+    with patch.object(src, "_get", return_value=("", True)) as get:
+        src.comments(parent, limit=10)
+    called_url = get.call_args[0][0]
+    assert called_url == \
+        "https://www.reddit.com/r/portugal/comments/abc123/.rss?feed=tok&user=alice"
 
 
 def test_enrich_author_prefix_stripped():

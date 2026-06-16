@@ -15,9 +15,11 @@ def make_sources(config: dict, etag_conn: sqlite3.Connection,
         if mode == "public":
             sources.append(PublicRedditSource(
                 PublicRedditConfig(
-                    user_agent = reddit_cfg.get("user_agent", "Godwit-Vane/1.0"),
-                    qps        = reddit_cfg.get("qps", 0.15),
-                    burst      = reddit_cfg.get("burst", 3),
+                    user_agent     = reddit_cfg.get("user_agent", "Godwit-Vane/1.0"),
+                    qps            = reddit_cfg.get("qps", 0.015),
+                    burst          = reddit_cfg.get("burst", 1),
+                    rss_feed_user  = reddit_cfg.get("rss_feed_user", ""),
+                    rss_feed_token = reddit_cfg.get("rss_feed_token", ""),
                 ),
                 etag_conn=etag_conn,
             ))

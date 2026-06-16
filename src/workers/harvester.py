@@ -18,7 +18,9 @@ class Harvester:
                  limiters: dict[str, RateLimiter],
                  logger:   Logger,
                  discover_limit: int = 25,
-                 comment_limit:  int = 100):
+                 comment_limit:  int = 100,
+                 enrich_enabled:   bool = True,
+                 comments_enabled: bool = True):
         self._tasks    = tasks
         self._content  = content
         self._sources  = sources
@@ -26,6 +28,12 @@ class Harvester:
         self._log      = logger
         self._discover_limit = discover_limit
         self._comment_limit  = comment_limit
+        # Kill-switches for the detail-fetch task types. Reddit began
+        # blanket-403'ing the JSON detail endpoints (2026-06-10), so these
+        # let the operator stop firing dead requests via settings.json
+        # without code changes. Default on; discovery (RSS) is unaffected.
+        self._enrich_enabled   = enrich_enabled
+        self._comments_enabled = comments_enabled
         self._stop = False
 
     def step(self) -> bool:
@@ -45,9 +53,15 @@ class Harvester:
             if task.type == "discover":
                 self._do_discover(task, source)
             elif task.type == "enrich":
-                self._do_enrich(task, source)
+                if self._enrich_enabled:
+                    self._do_enrich(task, source)
+                else:
+                    self._tasks.complete(task.id)  # drained as no-op while disabled
             elif task.type == "comments":
-                self._do_comments(task, source)
+                if self._comments_enabled:
+                    self._do_comments(task, source)
+                else:
+                    self._tasks.complete(task.id)  # drained as no-op while disabled
             else:
                 self._tasks.fail(task.id, f"unknown task type: {task.type!r}")
         except RetryableError as e:
@@ -64,17 +78,19 @@ class Harvester:
         self._log(f"[harvester] discover {source.name}:{channel} -> {len(posts)} posts")
         for p in posts:
             self._content.upsert(p, source_task_id=task.id)
-            self._tasks.enqueue(
-                "enrich",
-                {"source": source.name, "channel": channel, "post_id": p.id},
-                priority=100,
-            )
-            self._tasks.enqueue(
-                "comments",
-                {"source": source.name, "channel": channel, "post_id": p.id,
-                 "title": p.title, "url": p.url},
-                priority=110,
-            )
+            if self._enrich_enabled:
+                self._tasks.enqueue(
+                    "enrich",
+                    {"source": source.name, "channel": channel, "post_id": p.id},
+                    priority=100,
+                )
+            if self._comments_enabled:
+                self._tasks.enqueue(
+                    "comments",
+                    {"source": source.name, "channel": channel, "post_id": p.id,
+                     "title": p.title, "url": p.url},
+                    priority=110,
+                )
         self._tasks.complete(task.id)
 
     def _do_enrich(self, task, source: ContentSource) -> None:

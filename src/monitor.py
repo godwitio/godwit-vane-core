@@ -281,13 +281,21 @@ if _recovered_content:
 
 
 # ── Sources + rate limiters ────────────────────────────────────────────────────
+# Anonymous Reddit RSS is throttled to ~1 req/min (2026-06). A per-account
+# browser feed token (REDDIT_RSS_FEED_*) lifts that to ~100 req/10min, so the
+# rate default tracks token presence; an explicit REDDIT_QPS/BURST still wins.
+_REDDIT_RSS_USER  = os.getenv("REDDIT_RSS_FEED_USER", "")
+_REDDIT_RSS_TOKEN = os.getenv("REDDIT_RSS_FEED_TOKEN", "")
+_REDDIT_TOKENED   = bool(_REDDIT_RSS_USER and _REDDIT_RSS_TOKEN)
 SOURCES_CFG = {
     "reddit": {
-        "enabled":    True,
-        "mode":       os.getenv("REDDIT_MODE", "public"),
-        "user_agent": os.getenv("REDDIT_USER_AGENT", "Godwit-Vane/1.0"),
-        "qps":        float(os.getenv("REDDIT_QPS", "0.15")),
-        "burst":      int(os.getenv("REDDIT_BURST", "3")),
+        "enabled":        True,
+        "mode":           os.getenv("REDDIT_MODE", "public"),
+        "user_agent":     os.getenv("REDDIT_USER_AGENT", "Godwit-Vane/1.0"),
+        "qps":            float(os.getenv("REDDIT_QPS", "0.15" if _REDDIT_TOKENED else "0.015")),
+        "burst":          int(os.getenv("REDDIT_BURST", "3" if _REDDIT_TOKENED else "1")),
+        "rss_feed_user":  _REDDIT_RSS_USER,
+        "rss_feed_token": _REDDIT_RSS_TOKEN,
     },
 }
 SOURCES_LIST = make_sources(SOURCES_CFG, etag_conn=DB_CONN, logger=LOG)
@@ -477,6 +485,8 @@ HARVESTER = Harvester(
     sources=SOURCES, limiters=LIMITERS, logger=LOG,
     discover_limit=HARVESTER_CFG.get("discover_limit", 25),
     comment_limit=HARVESTER_CFG.get("comment_limit", 100),
+    enrich_enabled=HARVESTER_CFG.get("enrich_enabled", True),
+    comments_enabled=HARVESTER_CFG.get("comments_enabled", True),
 )
 
 SIFTER = Sifter(
