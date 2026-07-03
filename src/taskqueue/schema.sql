@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS content (
     parent_title    TEXT NOT NULL DEFAULT '',
     source_metadata TEXT NOT NULL DEFAULT '{}',
     content_hash    TEXT NOT NULL,
-    source_task_id  INTEGER REFERENCES tasks(id),
+    source_task_id  INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
     status          TEXT NOT NULL DEFAULT 'pending',
     attempts        INTEGER NOT NULL DEFAULT 0,
     last_error      TEXT,
